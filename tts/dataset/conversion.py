@@ -34,7 +34,8 @@ class AudioMelConversions:
         self.min_db = min_db
         self.max_abs_val = max_abs_val
         
-        self.spec2mel = self._get_spec2mel_proj()
+        # freq_bins = n_fft/2 + 1
+        self.spec2mel = self._get_spec2mel_proj() # shape (num_mels, freq_bins)
         self.mel2spec = torch.linalg.pinv(self.spec2mel)
     
     def _get_spec2mel_proj(self):

@@ -10,7 +10,7 @@ def load_wav(path_to_audio, sr=22050):
         path_to_audio (str): Path to the audio file.
         sr (int): Target sampling rate.
     Outputs:
-        waveform (torch.Tensor): Loaded audio waveform.
+        waveform (torch.Tensor): Loaded audio waveform of dimention (timestep).
     '''
     
     audio, og_sr = torchaudio.load(path_to_audio)
@@ -47,7 +47,7 @@ def db_to_amp(x):
 
 def normalize(x, min_db=-100., max_abs_val=4):
     '''
-    Normalizes a decibel tensor to the range [0, 1].
+    Normalizes a decibel tensor to the range [-4, 4] allows for stability during training.
     
     Inputs:
         x (torch.Tensor): Input decibel tensor.
@@ -62,7 +62,7 @@ def normalize(x, min_db=-100., max_abs_val=4):
 
 def denormalize(x, min_db=-100., max_abs_val=4):
     '''
-    Denormalizes a tensor from the range [0, 1] back to decibels.
+    Denormalizes a tensor from the range [-4, 4] back to decibels.
     
     Inputs:
         x (torch.Tensor): Input normalized tensor.
@@ -82,7 +82,7 @@ def build_padding_mask(lengths):
     Inputs:
         lengths (torch.Tensor): Tensor containing the length of encoded tokens
     Ouputs:
-        mask (torch.Tensor): Tensor Indicating the elements that are padded
+        mask (torch.Tensor): Tensor containing the padding mask
     '''
     B = lengths.shape[0]
     T = torch.max(lengths).item()
