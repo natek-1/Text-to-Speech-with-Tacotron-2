@@ -88,7 +88,7 @@ def build_padding_mask(lengths):
     T = torch.max(lengths).item()
     
     mask = torch.zeros(B, T)
-    for idx, length in enumerate(length):
+    for idx, length in enumerate(lengths):
         mask[idx,length:] = 1
     
     return mask.bool()

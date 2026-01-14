@@ -58,5 +58,9 @@ class Tokenizer:
             chars.append(self.id2char.get(token_id, self.unk_token))
         
         return ''.join(chars)
+
+if __name__ == "__main__":
+    tokenizer = Tokenizer()
+    print(tokenizer.vocab_size)
         
         

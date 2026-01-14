@@ -9,7 +9,7 @@ import librosa
 
 from tts.component.tokenizer import Tokenizer
 from tts.dataset.conversion import AudioMelConversions
-from tts.dataset.utils import load_wav
+from tts.dataset.utils import load_wav, build_padding_mask
 
 
 
@@ -81,22 +81,24 @@ class TTSDataset(Dataset):
             mels = [mels[i] for i in sorted_idx]
             output_lengths = output_lengths[sorted_idx]
             
-            
+            # much more efficient
             text_padded = torch.nn.utils.rnn.pad_sequence(texts, batch_first=True, padding_value=tokenizer.pad_token_id)
 
             # pad mel sequences
             max_target_len = torch.max(output_lengths).item()
-            num_mels = mels[0].shape[0] # n_mels
+            num_mels = mels[0].shape[0] # n_mels 80 by default
             
             mel_padded = torch.zeros((len(mels), num_mels, max_target_len))
-            gate_padded = torch.zeros(len(mels), max_target_len)
+            gate_padded = torch.zeros(len(mels), max_target_len) # when we should stop making predictions
             
             for i, mel in enumerate(mels):
                 t = mel.shape[1]
                 mel_padded[i, :, :t] = mel
                 gate_padded[i, t-1:] = 1
+                
+            mel_padded = mel_padded.transpose(1, 2) # seq_len, n_mels for conv layers
             
-            return text_padded, mel_padded, gate_padded, input_lengths, output_lengths
+            return text_padded, mel_padded, gate_padded, build_padding_mask(input_lengths), build_padding_mask(output_lengths)
         
         
         return _collate_fn
@@ -104,7 +106,7 @@ class TTSDataset(Dataset):
 
 class BatchSampler:
     '''
-    
+    Docstring for BatchSampler
     '''
     
     def __init__(self, dataset, batch_size, drop_last=False):
