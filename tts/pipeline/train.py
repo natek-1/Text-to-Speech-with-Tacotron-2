@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from tts.dataset.dataset import TTSDataset, TTSCollator, BatchSampler
+from tts.dataset.utils import denormalize
 from tts.dataset.config import TTSDatasetConfig
 from tts.model.tacotron import Tacotron2
 from tts.model.config import Tacotron2Config
@@ -49,7 +50,9 @@ EPSILON = 1e-6
 START_DECAY_EPOCHS = 5
 NUM_WORKERS = 10
 PREFETCH_FACTOR = 24
+SAVE_AUDIO_GEN = "generated_audio"
 
+os.makedirs(SAVE_AUDIO_GEN, exist_ok=True)
 
 TRAIN_DATASET_PATH = "data/train.csv"
 VALIDATION_DATASET_PATH = "data/test.csv"
@@ -184,6 +187,7 @@ try:
         batch_stop_losses = []
     
         loop = tqdm(enumerate(validation_loader), leave=False, desc="Validation Batch", total=len(validation_loader))
+        save_first = True
         for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
             text_padded = text_padded.to(DEVICE)
             input_lengths = input_lengths.to(DEVICE)
@@ -193,7 +197,7 @@ try:
             mel_mask = mel_mask.to(DEVICE)
 
             with torch.inference_mode():
-                mels_out, mels_out_postnet, stop_outs, _ = model(text_padded, input_lengths, mel_padded, text_mask, mel_mask) 
+                mels_out, mels_out_postnet, stop_outs, attention_weights = model(text_padded, input_lengths, mel_padded, text_mask, mel_mask) 
 
             mel_loss = F.mse_loss(mels_out, mel_padded)
             refined_mel_loss = F.mse_loss(mels_out_postnet, mel_padded)
@@ -208,6 +212,39 @@ try:
             batch_mel_losses.append(mel_loss.item())
             batch_refined_mel_losses.append(refined_mel_loss.item())
             batch_stop_losses.append(stop_loss.item())
+            if save_first:
+                save_first = False
+                true_mels = denormalize(mel_padded[0].T.to("cpu"))
+                pred_mels = denormalize(mels_out_postnet[0].T.to("cpu"))
+                attention = attention_weights[0].T.cpu().numpy()
+
+                fig, axes = plt.subplots(3, 1, figsize=(8, 12))
+                # Make subplots (3 rows, 1 column)
+                fig, axes = plt.subplots(3, 1, figsize=(8, 12))
+                
+                # True Mel
+                im0 = axes[0].imshow(true_mel, aspect='auto', origin='lower', interpolation='none')
+                axes[0].set_title("True Mel")
+                axes[0].set_ylabel("Mel bins")
+                fig.colorbar(im0, ax=axes[0])
+
+                # Predicted Mel
+                im1 = axes[1].imshow(pred_mel, aspect='auto', origin='lower', interpolation='none')
+                axes[1].set_title("Predicted Mel")
+                axes[1].set_ylabel("Mel bins")
+                fig.colorbar(im1, ax=axes[1])
+
+                # Attention
+                im2 = axes[2].imshow(attention, aspect='auto', origin='lower', interpolation='none')
+                axes[2].set_title("Alignment")
+                axes[2].set_ylabel("Character Index")
+                axes[2].set_xlabel("Decoder Mel Timesteps")
+                fig.colorbar(im2, ax=axes[2])
+
+                # Adjust layout
+                plt.tight_layout()
+                plt.savefig(os.path.join(SAVE_AUDIO_GEN, f"epoch_{epoch}_result.png"))
+                plt.close()
     
         validation_loss = sum(losses) / len(losses)
         validation_losses.append(validation_loss)
