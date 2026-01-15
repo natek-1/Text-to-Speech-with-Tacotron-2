@@ -210,3 +210,4 @@ __marimo__/
 # Dataset folders
 LJSpeech-1.1
 data
+checkpoints

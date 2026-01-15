@@ -162,7 +162,7 @@ if __name__ == '__main__':
     train_sampler = BatchSampler(dataset, batch_size=4)
     train_loader = DataLoader(dataset, collate_fn=collator, batch_sampler=train_sampler)
     
-    for text_padded, mel_padded, gate_padded, masked_text_padded, masked_mel_padded in train_loader:
+    for text_padded, text_lenght, mel_padded, gate_padded, masked_text_padded, masked_mel_padded in train_loader:
         print(text_padded.shape, mel_padded.shape, gate_padded.shape, masked_text_padded.shape, masked_mel_padded.shape)
         break
         

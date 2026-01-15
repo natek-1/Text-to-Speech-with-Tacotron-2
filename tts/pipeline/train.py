@@ -4,7 +4,7 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.audio.transforms as transforms
+import torchaudio.transforms as AT
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -15,17 +15,17 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from tts.dataset.dataset import TTSDataset, TTSCollator, BatchSampler
-from tts.dataset.config import DatasetConfig
+from tts.dataset.config import TTSDatasetConfig
 from tts.model.tacotron import Tacotron2
 from tts.model.config import Tacotron2Config
 
-logging.basicConfig(level=logging.INFO,
+logger = logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler("training.log")])
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 model_config = Tacotron2Config()
-dataset_config = DatasetConfig()
+dataset_config = TTSDatasetConfig()
 
 
 # Resume training configuration
@@ -44,11 +44,13 @@ MIN_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-6
 EPSILON = 1e-6
 START_DECAY_EPOCHS = None
-NUM_WORKERS = 0
+NUM_WORKERS = 5
+PREFETCH_FACTOR = 16
+use_scheduler = False
 
 
 TRIAIN_DATASET_PATH = "data/train.csv"
-VALIDATION_DATASET_PATH = "data/valid.csv"
+VALIDATION_DATASET_PATH = "data/test.csv"
 
 # dataset loaded
 train_dataset = TTSDataset(TRIAIN_DATASET_PATH)
@@ -56,8 +58,8 @@ validation_dataset = TTSDataset(VALIDATION_DATASET_PATH)
 collator = TTSCollator()
 train_sampler = BatchSampler(train_dataset, batch_size=BATCH_SIZE, drop_last=True)
 
-train_loader = DataLoader(train_dataset, sampler=train_sampler, collate_fn=collator, num_workers=NUM_WORKERS)
-validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collate_fn=collator, num_workers=NUM_WORKERS)
+train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=collator, num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR)
+validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collate_fn=collator, num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR )
 
 # model
 model = Tacotron2(model_config)
@@ -107,7 +109,7 @@ for epoch in epoch_range:
     
     model.train()
     losses = []
-    loop = tqdm(enumerate(train_loader), leave=False, desc="Batch")
+    loop = tqdm(enumerate(train_loader), leave=False, desc="Batch", total=len(train_loader))
     for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
         text_padded = text_padded.to(DEVICE)
         input_lengths = input_lengths.to(DEVICE)
@@ -138,7 +140,7 @@ for epoch in epoch_range:
     
     model.eval()
     losses = []
-    loop = tqdm(enumerate(validation_loader), leave=False, desc="Batch")
+    loop = tqdm(enumerate(validation_loader), leave=False, desc="Batch", total=len(validation_loader))
     for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
         text_padded = text_padded.to(DEVICE)
         input_lengths = input_lengths.to(DEVICE)
@@ -168,6 +170,7 @@ for epoch in epoch_range:
         logging.info(f"Learning rate: {scheduler.get_last_lr()[0]:.6f}")
     
     if validation_loss < best_validation_loss:
+        prev_best = best_validation_loss
         best_validation_loss = validation_loss
         checkpoint = {
             'epoch': epoch,
@@ -178,7 +181,7 @@ for epoch in epoch_range:
             'validation_losses': validation_losses
         }
         torch.save(checkpoint, CHECKPOINT_PATH)
-        logging.info(f"Validation loss improved from {best_validation_loss:.4f} to {validation_loss:.4f}. Saved checkpoint to {CHECKPOINT_PATH}")
+        logging.info(f"Validation loss improved from {prev_best:.4f} to {validation_loss:.4f}. Saved checkpoint to {CHECKPOINT_PATH}")
     
         
 
