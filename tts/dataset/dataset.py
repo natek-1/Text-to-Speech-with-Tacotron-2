@@ -116,7 +116,7 @@ def TTSCollator():
             
         mel_padded = mel_padded.transpose(1, 2) # batch_size, num_mels, timesteps
         
-        return text_padded, mel_padded, gate_padded, build_padding_mask(input_lengths), build_padding_mask(output_lengths)
+        return text_padded, input_lengths,mel_padded, gate_padded, build_padding_mask(input_lengths), build_padding_mask(output_lengths)
     
     
     return _collate_fn

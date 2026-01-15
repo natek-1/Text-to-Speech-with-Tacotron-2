@@ -45,18 +45,18 @@ class LocalSensitiveAttention(nn.Module):
         attention_dim (int): dimension of the attention
         decoder_hidden_size (int): dimension of the decoder hidden state
         encoder_hidden_size (int): dimension of the encoder hidden state
-        attention_n_filters (int): number of filters in the convolutional layer
+        attention_num_filters (int): number of filters in the convolutional layer
         attention_kernel_size (int): kernel size of the convolutional layer
     '''
 
     def __init__(self, attention_dim, decoder_hidden_size, encoder_hidden_size,
-            attention_n_filters, attention_kernel_size):
+            attention_num_filters, attention_kernel_size):
         super(LocalSensitiveAttention, self).__init__()
         self.in_proj = LinearNorm(decoder_hidden_size, attention_dim, bias=True, w_init_gain='tanh')
         self.enc_proj = LinearNorm(encoder_hidden_size, attention_dim, bias=True, w_init_gain='tanh')
 
 
-        self.location_layer = LocationLayer(attention_n_filters, attention_kernel_size, attention_dim)
+        self.location_layer = LocationLayer(attention_num_filters, attention_kernel_size, attention_dim)
         
         self.proj = LinearNorm(attention_dim, 1, bias=False, w_init_gain='linear')
         self.reset()
@@ -70,7 +70,7 @@ class LocalSensitiveAttention(nn.Module):
         inputs:
             decoder_hidden (torch.Tensor): decoder hidden state of shape (batch_size, decoder_hidden_size)
             encoder_hidden (torch.Tensor): encoder hidden state of shape (batch_size, seq_len, encoder_hidden_size)
-            attention_weights_cum (torch.Tensor): cumulative attention weights of shape (batch_size, seq_len)
+            attention_weights_cum (torch.Tensor): cumulative attention weights of shape (batch_size, 2, seq_len)
             mask (torch.Tensor): mask of shape (batch_size, seq_len)
         outputs:
             torch.Tensor: energy of shape (batch_size, seq_len)
