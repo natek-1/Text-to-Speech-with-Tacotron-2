@@ -54,7 +54,7 @@ class LocalSensitiveAttention(nn.Module):
             attention_num_filters, attention_kernel_size):
         super(LocalSensitiveAttention, self).__init__()
         self.in_proj = LinearNorm(decoder_hidden_size, attention_dim, bias=True, w_init_gain='tanh')
-        self.enc_proj = LinearNorm(encoder_hidden_size, attention_dim, bias=True, w_init_gain='tanh')
+        self.enc_proj = LinearNorm(encoder_hidden_size, attention_dim, bias=False, w_init_gain='tanh')
 
 
         self.location_layer = LocationLayer(attention_num_filters, attention_kernel_size, attention_dim)
