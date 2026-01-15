@@ -21,7 +21,7 @@ from tts.dataset.config import TTSDatasetConfig
 from tts.model.tacotron import Tacotron2
 from tts.model.config import Tacotron2Config
 
-logging = logging.basicConfig(level=logging.INFO,
+logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler("training.log")])
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -32,7 +32,7 @@ dataset_config = TTSDatasetConfig()
 
 # Resume training configuration
 RESUME_TRAINING = False  # Set to True to resume from checkpoint
-CHECKPOINT_PATH = "checkpoints/model_checkpoint.pt"
+CHECKPOINT_PATH = "checkpoints/model_checkpoint_v3.pt"
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
@@ -41,13 +41,13 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Training configuration
 BATCH_SIZE = 32
-NUM_EPOCHS = 50
+NUM_EPOCHS = 100
 LEARNING_RATE = 0.001
 MIN_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-6
 EPSILON = 1e-6
 START_DECAY_EPOCHS = 5
-NUM_WORKERS = 8
+NUM_WORKERS = 10
 PREFETCH_FACTOR = 24
 
 
@@ -60,8 +60,10 @@ validation_dataset = TTSDataset(VALIDATION_DATASET_PATH)
 collator = TTSCollator()
 train_sampler = BatchSampler(train_dataset, batch_size=BATCH_SIZE, drop_last=True)
 
-train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=collator, num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR)
-validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collate_fn=collator, num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR )
+train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=collator,
+                          num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR, pin_memory=True)
+validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collate_fn=collator,
+                               num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR, pin_memory=True)
 
 # model
 model = Tacotron2(model_config)
