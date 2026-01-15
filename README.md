@@ -14,6 +14,7 @@ cd Text-to-Speech-with-Tacotron-2
 ```bash
 conda create -n tts python=3.10 -y
 conda activate tts
+conda install "ffmpeg" -c conda-forge -y
 pip install -r requirements.txt
 ```
 

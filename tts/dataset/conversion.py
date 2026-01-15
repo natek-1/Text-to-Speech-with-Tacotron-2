@@ -15,6 +15,7 @@ class AudioMelConversions:
         n_fft (int): Number of FFT components.
         hop_length (int): Hop length for STFT.
         win_length (int): Window length for STFT.
+        num_mels (int): Number of mel bands.
         fmin (int): Minimum frequency for mel filter bank.
         fmax (int): Maximum frequency for mel filter bank.
         min_db (float): Minimum decibel value for normalization.

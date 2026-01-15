@@ -12,7 +12,6 @@ def load_wav(path_to_audio, sr=22050):
     Outputs:
         waveform (torch.Tensor): Loaded audio waveform of dimention (timestep).
     '''
-    
     audio, og_sr = torchaudio.load(path_to_audio)
     if og_sr != sr:
         audio = torchaudio.functional.resample(audio, orig_freq=og_sr, new_freq=sr)

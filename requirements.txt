@@ -6,4 +6,5 @@ librosa
 scipy
 matplotlib
 scikit-learn
+torchcodec
 -e .
