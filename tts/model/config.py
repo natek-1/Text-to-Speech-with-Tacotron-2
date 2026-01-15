@@ -13,7 +13,7 @@ class Tacotron2Config:
 
     # encoder config
     encoder_kernel_size: int = 5
-    encoder_num_convulations: int = 3
+    encoder_num_convolutions: int = 3
     encoder_embed_dim: int = 512
     encoder_dropout: float = 0.5 
 

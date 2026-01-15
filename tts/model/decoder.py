@@ -296,10 +296,10 @@ class Decoder(nn.Module):
         for step in range(max_decode_steps):
             _input = self.prenet(_input) # (1, prenet_dim)
 
-            mel_pred, stop_pred, attention_weights = self.decode(_input) # (1, num_mels), (1, 1), (1, step)
+            mel_pred, stop_pred, step_attention_weights = self.decode(_input) # (1, num_mels), (1, 1), (1, step)
             mels_output.append(mel_pred)
             stop_outs.append(stop_pred)
-            attention_weights.append(attention_weights)
+            attention_weights.append(step_attention_weights)
             _input = mel_pred
 
             if torch.sigmoid(stop_pred) > 0.5:

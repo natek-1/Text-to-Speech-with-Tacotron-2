@@ -8,4 +8,5 @@ matplotlib
 scikit-learn
 torchcodec
 tqdm
+plotly
 -e .

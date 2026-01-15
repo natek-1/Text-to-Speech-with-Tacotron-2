@@ -22,7 +22,7 @@ class Encoder(nn.Module):
         self.embedding = nn.Embedding(self.config.num_chars, self.config.character_embedding_size, padding_idx=self.config.pad_token_id)
 
         self.convolutions = nn.ModuleList()
-        for i in range(self.config.encoder_num_convulations):
+        for i in range(self.config.encoder_num_convolutions):
             self.convolutions.append(
                 nn.Sequential(
                     ConvNorm(self.config.encoder_embed_dim if i != 0 else self.config.character_embedding_size,
