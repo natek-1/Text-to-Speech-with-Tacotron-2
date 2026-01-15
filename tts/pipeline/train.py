@@ -214,8 +214,8 @@ try:
             batch_stop_losses.append(stop_loss.item())
             if save_first:
                 save_first = False
-                true_mels = denormalize(mel_padded[0].T.to("cpu"))
-                pred_mels = denormalize(mels_out_postnet[0].T.to("cpu"))
+                true_mel = denormalize(mel_padded[0].T.to("cpu"))
+                pred_mel = denormalize(mels_out_postnet[0].T.to("cpu"))
                 attention = attention_weights[0].T.cpu().numpy()
 
                 fig, axes = plt.subplots(3, 1, figsize=(8, 12))
