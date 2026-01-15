@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from tqdm import trange
+
 from tts.model.config import Tacotron2Config
 from tts.model.encoder import Encoder
 from tts.model.decoder import Decoder
@@ -40,7 +42,7 @@ class Tacotron2(nn.Module):
         mel_outputs, mel_residual, stop_outputs, alignment = self.decoder(encoder_outputs, encoder_mask,
                                                              mel_target, decoder_mask)
         mel_outputs_postnet = mel_outputs + mel_residual
-        return mel_outputs_postnet, stop_outputs, alignment
+        return mel_outputs,mel_outputs_postnet, stop_outputs, alignment
     
     @torch.no_grad()
     def inference(self, text, input_lengths):
@@ -83,9 +85,11 @@ if __name__ == "__main__":
         print(input_lengths.shape)
         print(mel_target.shape)
         print("model")
-        mel_outputs, stop_outputs, alignment = model(text, input_lengths, mel_target, encoder_mask, decoder_mask)
+        mel_outputs, mel_outputs_postnet, stop_outputs, alignment = model(text, input_lengths, mel_target, encoder_mask, decoder_mask)
         print("Output")
         print(mel_outputs.shape)
+        print(mel_outputs_postnet.shape)
+        print(stop_outputs.shape)
         print(alignment.shape)
         break
         
