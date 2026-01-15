@@ -41,15 +41,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Training configuration
 BATCH_SIZE = 32
-NUM_EPOCHS = 100
+NUM_EPOCHS = 50
 LEARNING_RATE = 0.001
 MIN_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-6
 EPSILON = 1e-6
-START_DECAY_EPOCHS = None
+START_DECAY_EPOCHS = 5
 NUM_WORKERS = 8
 PREFETCH_FACTOR = 24
-use_scheduler = False
 
 
 TRAIN_DATASET_PATH = "data/train.csv"
@@ -73,8 +72,10 @@ total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires
 logging.info(f"Total trainable parameters: {total_trainable_params}")
 
 # scheduler
+use_scheduler = False
 if START_DECAY_EPOCHS is not None:
     logging.info("using scheduler")
+    use_scheduler = True
     delay_epochs = NUM_EPOCHS - START_DECAY_EPOCHS
     decay_gamma = (MIN_LEARNING_RATE / LEARNING_RATE) ** (1 / delay_epochs)
 
@@ -137,7 +138,7 @@ try:
         batch_refined_mel_losses = []
         batch_stop_losses = []
     
-        loop = tqdm(enumerate(train_loader), leave=False, desc="Batch", total=len(train_loader))
+        loop = tqdm(enumerate(train_loader), leave=False, desc="Training Batch", total=len(train_loader))
         for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
             text_padded = text_padded.to(DEVICE)
             input_lengths = input_lengths.to(DEVICE)
@@ -180,7 +181,7 @@ try:
         batch_refined_mel_losses = []
         batch_stop_losses = []
     
-        loop = tqdm(enumerate(validation_loader), leave=False, desc="Batch", total=len(validation_loader))
+        loop = tqdm(enumerate(validation_loader), leave=False, desc="Validation Batch", total=len(validation_loader))
         for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
             text_padded = text_padded.to(DEVICE)
             input_lengths = input_lengths.to(DEVICE)

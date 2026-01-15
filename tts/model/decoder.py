@@ -108,7 +108,7 @@ class Postnet(nn.Module):
 class Decoder(nn.Module):
     '''
     Decoder module for Tacotron 2
-    Per the paper, it takes the final generated mel-spectrogram and refines it
+    Per the paper, it takes encoder outputs and generates mel-spectrogram
     
     init:
     config (Tacotron2Config): configuration for the decoder
@@ -236,7 +236,7 @@ class Decoder(nn.Module):
             torch.Tensor: predicted mel-spectrogram of shape (batch_size, mel_seq_len, num_mels)
             torch.tensor: mel-spectrogram residual of shape (batch_size, mel_seq_len, num_mels)
             torch.Tensor: stop token of shape (batch_size, mel_seq_len)
-            torch.tensor: attention weights of shape (batch_size, mel_seq_len)
+            torch.tensor: attention weights of shape (batch_size, mel_seq_len, seq_len)
         """
         start_feature_vector = self._bos_frame(mels.shape[0]).to(encoder_output.device)
         mels_w_start = torch.cat([start_feature_vector, mels], dim=1) # (B, mel_seq_len + 1, num_mels)
@@ -245,21 +245,21 @@ class Decoder(nn.Module):
 
         mels_output, stop_tokens, attention_weights = [], [], []
         total_steps = mels.shape[1] # notice we only make predictions for the mel_seq_len (not mel_seq_len + 1)
-        mel_proj = self.prenet(mels_w_start)
+        mel_proj = self.prenet(mels_w_start) # teacher forcing (B, mel_seq_len + 1, prenet_dim)
 
         for step in range(total_steps):
             if step == 0:
                 self.attention.reset()
             
-            mel_step = mel_proj[:, step, :]
-            mel_pred, stop_pred, attention_weight = self.decode(mel_step)
+            mel_step = mel_proj[:, step, :] # (B, prenet_dim)
+            mel_pred, stop_pred, attention_weight = self.decode(mel_step) # (B, num_mels), (B, 1), (B, S)
             mels_output.append(mel_pred)
             stop_tokens.append(stop_pred)
             attention_weights.append(attention_weight)
         
         mels_output = torch.stack(mels_output, dim=1) # (B, mel_seq_len, num_mels)
         stop_tokens = torch.stack(stop_tokens, dim=1).squeeze() # (B, mel_seq_len)
-        attention_weights = torch.stack(attention_weights, dim=1) # (B, mel_seq_len)
+        attention_weights = torch.stack(attention_weights, dim=1) # (B, mel_seq_len, seq_len)
 
         mel_residual = self.postnet(mels_output) # (B, mel_seq_len, num_mels)
 
@@ -268,7 +268,7 @@ class Decoder(nn.Module):
         decoder_mask = decoder_mask.unsqueeze(-1).bool() # (B, mel_seq_len, 1)
         mel_residual = mel_residual.masked_fill(decoder_mask, 0.0) # (B, mel_seq_len, num_mels)
         mels_output = mels_output.masked_fill(decoder_mask, 0.0) # (B, mel_seq_len, num_mels)
-        attention_weights = attention_weights.masked_fill(decoder_mask, 0.0) # (B, mel_seq_len)
+        attention_weights = attention_weights.masked_fill(decoder_mask, 0.0) # (B, mel_seq_len, seq_len)
         stop_tokens = stop_tokens.masked_fill(decoder_mask.squeeze(), 1e3) # (B, mel_seq_len)
 
         return mels_output, mel_residual, stop_tokens, attention_weights
@@ -284,7 +284,7 @@ class Decoder(nn.Module):
             torch.Tensor: predicted mel-spectrogram of shape (1, mel_seq_len, num_mels)
             torch.tensor: mel-spectrogram residual of shape (1, mel_seq_len, num_mels)
             torch.Tensor: stop token of shape (1, mel_seq_len)
-            torch.tensor: attention weights of shape (1, text_seq_len, mel_seq_len)
+            torch.tensor: attention weights of shape (1, mel_seq_len, text_seq_len)
         '''
         self._init_decoder(encoder_output, None)
 
@@ -296,10 +296,10 @@ class Decoder(nn.Module):
         for step in range(max_decode_steps):
             _input = self.prenet(_input) # (1, prenet_dim)
 
-            mel_pred, stop_pred, step_attention_weights = self.decode(_input) # (1, num_mels), (1, 1), (1, step)
+            mel_pred, stop_pred, attention_weight = self.decode(_input) # (1, num_mels), (1, 1), (1, seq_len)
             mels_output.append(mel_pred)
             stop_outs.append(stop_pred)
-            attention_weights.append(step_attention_weights)
+            attention_weights.append(attention_weight)
             _input = mel_pred
 
             if torch.sigmoid(stop_pred) > 0.5:
@@ -308,7 +308,7 @@ class Decoder(nn.Module):
         mels_output = torch.stack(mels_output, dim=1) # (1, mel_seq_len, num_mels)
         mel_residual = self.postnet(mels_output) # (1, mel_seq_len, num_mels)
         stop_outs = torch.stack(stop_outs, dim=1).squeeze() # (1, mel_seq_len)
-        attention_weights = torch.stack(attention_weights, dim=1) # (1, text_seq_len, mel_seq_len)
+        attention_weights = torch.stack(attention_weights, dim=1) # (1, mel_seq_len, seq_len)
         
         return mels_output, mel_residual, stop_outs, attention_weights
         

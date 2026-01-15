@@ -11,17 +11,17 @@ class LocationLayer(nn.Module):
     Per the paper, this layer considers the current attention weights and cumulative attention
     and uses a convolutional layer to extract features
     init:
-        attention_n_filters (int): number of filters in the convolutional layer
+        attention_num_filters (int): number of filters in the convolutional layer
         attention_kernel_size (int): kernel size of the convolutional layer
         attention_dim (int): dimension of the attention
     '''
 
-    def __init__(self, attention_n_filters, attention_kernel_size, attention_dim):
+    def __init__(self, attention_num_filters, attention_kernel_size, attention_dim):
         super(LocationLayer, self).__init__()
         self.conv = ConvNorm(in_channels=2,
-                        out_channels=attention_n_filters,
+                        out_channels=attention_num_filters,
                         kernel_size=attention_kernel_size, padding="same", bias=False)
-        self.proj = LinearNorm(attention_n_filters, attention_dim, bias=False)
+        self.proj = LinearNorm(attention_num_filters, attention_dim, bias=False, w_init_gain='tanh')
 
     
     def forward(self, attention_weights):
@@ -32,7 +32,8 @@ class LocationLayer(nn.Module):
         outputs:
             torch.Tensor: location vector of shape (batch_size, seq_len, attention_dim)
         """
-        location = self.conv(attention_weights).transpose(1, 2) # (batch_size, attention_n_filters, seq_len) -> (batch_size, seq_len, attention_n_filters)
+        location = self.conv(attention_weights) # (batch_size, attention_num_filters, seq_len)
+        location = location.transpose(1, 2) #  (batch_size, seq_len, attention_num_filters)
         location = self.proj(location) # (batch_size, seq_len, attention_dim)
         return location
 
@@ -58,7 +59,7 @@ class LocalSensitiveAttention(nn.Module):
 
         self.location_layer = LocationLayer(attention_num_filters, attention_kernel_size, attention_dim)
         
-        self.proj = LinearNorm(attention_dim, 1, bias=False, w_init_gain='linear')
+        self.proj = LinearNorm(attention_dim, 1, bias=False, w_init_gain='tanh')
         self.reset()
     
     def reset(self):
@@ -82,13 +83,12 @@ class LocalSensitiveAttention(nn.Module):
 
         cumulative_attention = self.location_layer(attention_weights_cum) # (batch_size, seq_len, attention_dim)
 
-
         energy = self.proj(
             torch.tanh(decoder_hidden + encoder_hidden + cumulative_attention)
         ) # (batch_size, seq_len, 1)
         energy = energy.squeeze(-1) # (batch_size, seq_len)
         if mask is not None:
-            energy = energy.masked_fill(mask, -float('inf'))
+            energy = energy.masked_fill(mask.bool(), -float('inf'))
         return energy
     
     def forward(self, decoder_hidden, encoder_hidden, attention_weights_cum, mask=None):

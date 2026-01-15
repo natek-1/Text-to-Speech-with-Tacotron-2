@@ -37,7 +37,7 @@ class Encoder(nn.Module):
                     self.config.encoder_embed_dim // 2, # divide by 2 because it is bidirectional
                     bidirectional=True, batch_first=True)
     
-    def forward(self, x, input_lengths):
+    def forward(self, x, input_lengths=None):
         '''
         forward pass
         inputs:
@@ -47,9 +47,14 @@ class Encoder(nn.Module):
             torch.Tensor: output tensor of shape (batch_size, seq_len, encoder_embed_dim)
         '''
         x = self.embedding(x).transpose(1, 2) # (batch_size, character_embedding_size, seq_len)
+        batch_size, _, seq_len = x.shape
+        if input_lengths is None:
+            input_lengths = torch.full((batch_size,), seq_len, dtype=torch.long, device=x.device)
+        
         for conv in self.convolutions:
             x = conv(x)
         x = x.transpose(1, 2) # (batch_size, seq_len, encoder_embed_dim)
+        
         x = pack_padded_sequence(x, input_lengths.cpu(), batch_first=True)
         x, _ = self.lstm(x)
         x, _ = pad_packed_sequence(x, batch_first=True) # (batch_size, seq_len, encoder_embed_dim)

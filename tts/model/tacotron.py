@@ -45,12 +45,12 @@ class Tacotron2(nn.Module):
         return mel_outputs,mel_outputs_postnet, stop_outputs, alignment
     
     @torch.no_grad()
-    def inference(self, text, input_lengths):
+    def inference(self, text, max_decode_steps=1000):
         '''
         inference pass
         inputs:
             text (torch.Tensor): input text of shape (batch_size, seq_len)
-            input_lengths (torch.Tensor): input lengths of shape (batch_size)
+            max_decode_steps (int): maximum number of decoding steps
         outputs:
             mel_outputs (torch.Tensor): mel-spectrogram outputs of shape (batch_size, mel_seq_len, num_mels)
             alignment (torch.Tensor): alignment of shape (batch_size, mel_seq_len, encoder_seq_len)
@@ -59,8 +59,8 @@ class Tacotron2(nn.Module):
             text = text.unsqueeze(0)
         
         assert text.shape[0] == 1, "Batch size must be 1 for inference"
-        encoder_outputs = self.encoder(text, input_lengths)
-        mel_outputs, mel_residual, _, alignment = self.decoder.inference(encoder_outputs)
+        encoder_outputs = self.encoder(text)
+        mel_outputs, mel_residual, _, alignment = self.decoder.inference(encoder_outputs, max_decode_steps)
         mel_outputs_postnet = mel_outputs + mel_residual
 
         return mel_outputs_postnet, alignment
