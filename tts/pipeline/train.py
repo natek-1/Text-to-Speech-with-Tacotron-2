@@ -21,7 +21,7 @@ from tts.dataset.config import TTSDatasetConfig
 from tts.model.tacotron import Tacotron2
 from tts.model.config import Tacotron2Config
 
-logger = logging.basicConfig(level=logging.INFO,
+logging = logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler("training.log")])
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -31,7 +31,7 @@ dataset_config = TTSDatasetConfig()
 
 
 # Resume training configuration
-RESUME_TRAINING = True  # Set to True to resume from checkpoint
+RESUME_TRAINING = False  # Set to True to resume from checkpoint
 CHECKPOINT_PATH = "checkpoints/model_checkpoint.pt"
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -47,8 +47,8 @@ MIN_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-6
 EPSILON = 1e-6
 START_DECAY_EPOCHS = None
-NUM_WORKERS = 5
-PREFETCH_FACTOR = 16
+NUM_WORKERS = 8
+PREFETCH_FACTOR = 24
 use_scheduler = False
 
 
@@ -74,7 +74,7 @@ logging.info(f"Total trainable parameters: {total_trainable_params}")
 
 # scheduler
 if START_DECAY_EPOCHS is not None:
-    logger.info("using scheduler")
+    logging.info("using scheduler")
     delay_epochs = NUM_EPOCHS - START_DECAY_EPOCHS
     decay_gamma = (MIN_LEARNING_RATE / LEARNING_RATE) ** (1 / delay_epochs)
 
@@ -235,15 +235,15 @@ try:
             'val_stop_losses': val_stop_losses
         }
             torch.save(checkpoint, CHECKPOINT_PATH)
-            logging.info(f"Validation loss improved from {prev_best:.4f} to {validation_loss:.4f}. Saved checkpoint to {CHECKPOINT_PATH}")
+            logging.info(f"Validation loss improved from {prev_best:.4f} to {validation_loss:.4f}. During Epoch {epoch} Saved checkpoint to {CHECKPOINT_PATH}")
 
 except KeyboardInterrupt:
-    logger.info("Training interrupted by user. Generating plots...")
+    logging.info("Training interrupted by user. Generating plots...")
 
 finally:
     def plot_losses():
         if len(train_losses) == 0:
-            logger.info("No training data to plot.")
+            logging.info("No training data to plot.")
             return
 
         epochs = list(range(1, len(train_losses) + 1))
@@ -269,7 +269,7 @@ finally:
 
         fig.update_layout(title_text="Training Metrics", height=800)
         fig.write_html("training_losses.html")
-        logger.info("Saved training plots to training_losses.html")
+        logging.info("Saved training plots to training_losses.html")
 
         # --- Matplotlib Plotting ---
         try:
@@ -303,9 +303,9 @@ finally:
             plt.tight_layout()
             plt.savefig("training_losses.png")
             plt.close()
-            logger.info("Saved training plots to training_losses.png")
+            logging.info("Saved training plots to training_losses.png")
         except Exception as e:
-            logger.error(f"Failed to generate matplotlib plot: {e}")
+            logging.error(f"Failed to generate matplotlib plot: {e}")
 
     plot_losses()
     
