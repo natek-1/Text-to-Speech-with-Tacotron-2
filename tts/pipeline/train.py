@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from tts.dataset.dataset import TTSDataset, TTSCollator, BatchSampler
-from tts.model.loss import Tacotron2Loss
+from tts.model.loss import FeaturePredictNetLoss
 from tts.dataset.utils import denormalize
 from tts.dataset.config import TTSDatasetConfig
 from tts.model.model import FeaturePredictNet
@@ -27,7 +27,6 @@ logging.basicConfig(level=logging.INFO,
                     handlers=[logging.FileHandler("training.log")])
 os.environ["TOKENIZERS_PARALLELISM"] = "True"
 
-model_config = Tacotron2Config()
 dataset_config = TTSDatasetConfig()
 
 
@@ -60,8 +59,8 @@ VALIDATION_DATASET_PATH = "data/test.csv"
 USE_MEL = True
 
 # dataset loaded
-train_dataset = TTSDataset(TRAIN_DATASET_PATH, return_mel=USE_MEL)
-validation_dataset = TTSDataset(VALIDATION_DATASET_PATH, return_mel=USE_MEL)
+train_dataset = TTSDataset(TRAIN_DATASET_PATH, return_spectogram=USE_MEL)
+validation_dataset = TTSDataset(VALIDATION_DATASET_PATH, return_spectogram=USE_MEL)
 collator = TTSCollator()
 train_sampler = BatchSampler(train_dataset, batch_size=BATCH_SIZE, drop_last=True)
 
@@ -71,8 +70,8 @@ validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collat
                                num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR, pin_memory=True)
 
 # model
-num_chars = len(train_dataset.tokenizer())
-padding_idx = train_dataset.tokenizer().pad_token_id
+num_chars = train_dataset.tokenizer.vocab_size
+padding_idx = train_dataset.tokenizer.pad_token_id
 feature_dim = dataset_config.n_fft // 2 + 1 if USE_MEL else dataset_config.n_mels
 
 model = FeaturePredictNet(num_chars, padding_idx, feature_dim)
