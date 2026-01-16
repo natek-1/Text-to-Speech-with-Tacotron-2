@@ -30,6 +30,12 @@ os.environ["TOKENIZERS_PARALLELISM"] = "True"
 model_config = Tacotron2Config()
 dataset_config = TTSDatasetConfig()
 
+## TODO Save prediction images in epoch directory for the first 5 elements of the first validation batch
+## TODO inference on the first 5 elements of the first validation batch
+## TODO: Save audio generation (from inference) in epoch directory for the first 5 elements of the first validation batch
+## TODO: experiment on using mel spectrogram as input instead of regular spectograms
+## 
+
 
 # Resume training configuration
 RESUME_TRAINING = False  # Set to True to resume from checkpoint
