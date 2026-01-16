@@ -214,3 +214,4 @@ checkpoints
 experiments/
 code/
 audio_gen/
+generated_audio/
