@@ -1,4 +1,4 @@
-
+from scipy import signal
 import torch
 import torchaudio
 
@@ -74,6 +74,25 @@ def denormalize(x, min_db=-100., max_abs_val=4):
     x = (x + max_abs_val) / (2 * max_abs_val)
     x = x * -min_db + min_db
     return x
+
+def preemphasis(x, alpha=0.97):
+    '''
+    Applies pre-emphasis filtering to an audio signal.
+    
+    Inputs:
+        x (torch.Tensor): Input sound tensor
+        alpha (float): Description
+    '''
+    return signal.lfilter([1, -alpha], [1], x)
+
+def inv_preemphasis(x, alpha):
+    '''
+    de-emphasis on audio signnal
+    Inputs:
+        x (torch.Tensor):
+    '''
+    return signal.lfilter([1], [1, -alpha], x)
+
 
 def build_padding_mask(lengths):
     '''

@@ -8,11 +8,10 @@ from transformers import set_seed
 from accelerate import Accelerator
 import matplotlib.pyplot as plt
 
-from tts.model.config import Tacotron2Config
-from tts.model.model import Tacotron2
+from tts.model.model import Tacotron2Config, Tacotron2
 from tts.dataset.dataset import TTSDataset,TTSCollator, BatchSampler
 from tts.dataset.utils import denormalize
-from tts.tokenizer import Tokenizer
+from tts.component.tokenizer import Tokenizer
 
 NUM_EPOCHS = 50
 CONSOLE_OUT_ITERS = 5
@@ -24,8 +23,8 @@ ADAM_EPS = 1e-6
 MIN_LEARNING_RATE = 1e-5
 START_DECAY_EPOCHS = None
 save_audio_gen = "audio_gen"
-TRAIN_MANIFEST = "train.csv"
-VAL_MANIFEST = "test.csv"
+TRAIN_MANIFEST = "data/train.csv"
+VAL_MANIFEST = "data/test.csv"
 RESUME_FROM_CHECKPOINT = False
 SEED = 42
 EXPERIMENT_NAME = "trailv1"
@@ -206,7 +205,7 @@ for epoch in range(completed_epochs, NUM_EPOCHS):
         val_stop_loss += stop_loss
         num_losses += 1
 
-        if accelerator.is_main_process:
+        if True:
             if save_first:
 
                 # Extract tensors

@@ -1,131 +1,246 @@
 import pandas as pd
+import torch
+import torch.nn.functional as F
+import torchaudio
+from torch.utils.data import Dataset, DataLoader
+import librosa
+from tts.component.tokenizer import Tokenizer
+from scipy import signal
 import numpy as np
 
+def load_wav(path_to_audio, sr=22050):
+    audio, orig_sr = torchaudio.load(path_to_audio)
 
-import torch
-from torch.utils.data import Dataset, DataLoader
+    if sr != orig_sr:
+        audio = torchaudio.functional.resample(audio, orig_freq=orig_sr, new_freq=sr)
 
-import librosa
+    return audio.squeeze(0)
 
-from tts.component.tokenizer import Tokenizer
-from tts.dataset.conversion import AudioMelConversions
-from tts.dataset.utils import load_wav, build_padding_mask
+def amp_to_db(x, min_db=-100):
+    ### Forces min DB to be -100
+    ### 20 * torch.log10(1e-5) = 20 * -5 = -100
+    clip_val = 10 ** (min_db / 20)
+    return 20 * torch.log10(torch.clamp(x, min=clip_val))
 
+def db_to_amp(x):
+    return 10 ** (x / 20)
 
+def normalize(x, 
+              min_db=-100., 
+              max_abs_val=4):
 
-
-
-class TTSDataset(Dataset):
-    '''
-    Dataset for Text-to-Speech (TTS) training.
-    init:
-        path_to_metadata (str): path to metadata csv file
-        sample_rate (int): sample rate of audio files
-        n_fft (int): number of FFT points
-        n_mels (int): number of mel bands
-        hop_length (int): hop length for STFT
-        win_length (int): window length for STFT
-        fmin (int): minimum frequency for mel spectrogram
-        fmax (int): maximum frequency for mel spectrogram
-        center (bool): whether to center the STFT
-        min_db (float): minimum decibel value for mel spectrogram
-        max_abs_val (float): maximum absolute value for mel spectrogram
-        normalize (bool): whether to normalize mel spectrogram
-    '''
+    x = (x - min_db) / -min_db
+    x = 2 * max_abs_val * x - max_abs_val
+    x = torch.clip(x, min=-max_abs_val, max=max_abs_val)
     
-    def __init__(self, path_to_metadata, sample_rate=22050, n_fft=1024, n_mels=80, hop_length=256, win_length=1024,
-                 fmin=0, fmax=8000, center=False, min_db=-100., max_abs_val=4, normalize=True):
+    return x
+
+def denormalize(x, 
+                min_db=-100, 
+                max_abs_val=4):
+    
+    x = torch.clip(x, min=-max_abs_val, max=max_abs_val)
+    x = (x + max_abs_val) / (2 * max_abs_val)
+    x = x * -min_db + min_db
+
+    return x
+
+class AudioMelConversions:
+    def __init__(self,
+                 num_mels=80,
+                 sampling_rate=22050, 
+                 n_fft=1024, 
+                 window_size=1024, 
+                 hop_size=256,
+                 fmin=0, 
+                 fmax=8000,
+                 center=False,
+                 min_db=-100, 
+                 max_scaled_abs=4):
         
-        self.tokenizer = Tokenizer()
-        self.sample_rate = sample_rate
+        self.num_mels = num_mels
+        self.sampling_rate = sampling_rate
         self.n_fft = n_fft
-        self.n_mels = n_mels
-        self.hop_length = hop_length
-        self.win_length = win_length
+        self.window_size = window_size
+        self.hop_size = hop_size
         self.fmin = fmin
         self.fmax = fmax
         self.center = center
         self.min_db = min_db
-        self.max_abs_val = max_abs_val
-        self.normalize = normalize
+        self.max_scaled_abs = max_scaled_abs
+
+        self.spec2mel = self._get_spec2mel_proj()
+        self.mel2spec = torch.linalg.pinv(self.spec2mel)
+
+    def _get_spec2mel_proj(self):
+        mel = librosa.filters.mel(sr=self.sampling_rate, 
+                                  n_fft=self.n_fft, 
+                                  n_mels=self.num_mels, 
+                                  fmin=self.fmin, 
+                                  fmax=self.fmax)
+        return torch.from_numpy(mel)
+    
+    def audio2mel(self, audio, do_norm=False):
+
+        if not isinstance(audio, torch.Tensor):
+            audio = torch.tensor(audio, dtype=torch.float32)
+
+        spectrogram = torch.stft(input=audio, 
+                                 n_fft=self.n_fft, 
+                                 hop_length=self.hop_size, 
+                                 win_length=self.window_size, 
+                                 window=torch.hann_window(self.window_size).to(audio.device), 
+                                 center=self.center, 
+                                 pad_mode="reflect", 
+                                 normalized=False, 
+                                 onesided=True,
+                                 return_complex=True)
+        
+        spectrogram = torch.abs(spectrogram)
+        
+        mel = torch.matmul(self.spec2mel.to(spectrogram.device), spectrogram)
+
+        mel = amp_to_db(mel, self.min_db)
+        
+        if do_norm:
+            mel = normalize(mel, min_db=self.min_db, max_abs_val=self.max_scaled_abs)
+
+        return mel
+    
+    def mel2audio(self, mel, do_denorm=False, griffin_lim_iters=60):
+
+        if do_denorm:
+            mel = denormalize(mel, min_db=self.min_db, max_abs_val=self.max_scaled_abs)
+
+        mel = db_to_amp(mel)
+
+        spectrogram = torch.matmul(self.mel2spec.to(mel.device), mel).cpu().numpy()
+
+        audio = librosa.griffinlim(S=spectrogram, 
+                                   n_iter=griffin_lim_iters, 
+                                   hop_length=self.hop_size, 
+                                   win_length=self.window_size, 
+                                   n_fft=self.n_fft,
+                                   window="hann")
+
+        audio *= 32767 / max(0.01, np.max(np.abs(audio)))
+        
+        audio = audio.astype(np.int16)
+
+        return audio
+
+def build_padding_mask(lengths):
+
+    B = lengths.size(0)
+    T = torch.max(lengths).item()
+
+    mask = torch.zeros(B, T)
+    for i in range(B):
+        mask[i, lengths[i]:] = 1
+
+    return mask.bool()
+
+class TTSDataset(Dataset):
+    def __init__(self, 
+                 path_to_metadata,
+                 sample_rate=22050,
+                 n_fft=1024, 
+                 window_size=1024, 
+                 hop_size=256, 
+                 fmin=0,
+                 fmax=8000, 
+                 num_mels=80, 
+                 center=False, 
+                 normalized=False, 
+                 min_db=-100, 
+                 max_scaled_abs=4):
         
         self.metadata = pd.read_csv(path_to_metadata)
-        self.transcript_lengths = [len(self.tokenizer.encode(text)) for text in
-                                   self.metadata['normalized_text'].tolist()]
-        self.audio_proc = AudioMelConversions(sr=self.sample_rate, n_fft=self.n_fft, num_mels=self.n_mels, hop_length=self.hop_length,
-                                              win_length=self.win_length, fmin=self.fmin, fmax=self.fmax, center=self.center,
-                                              min_db=self.min_db, max_abs_val=self.max_abs_val)
+        self.sample_rate = sample_rate
+        self.n_fft = n_fft
+        self.win_size = window_size
+        self.hop_size = hop_size
+        self.fmin = fmin
+        self.fmax = fmax 
+        self.num_mels = num_mels
+        self.center = center
+        self.normalized = normalized
+        self.min_db = min_db
+        self.max_scaled_abs = max_scaled_abs
+
+        self.transcript_lengths = [len(Tokenizer().encode(t)) for t in self.metadata["normalized_text"]]
+
+        self.audio_proc = AudioMelConversions(num_mels=self.num_mels, 
+                                              sampling_rate=self.sample_rate, 
+                                              n_fft=self.n_fft, 
+                                              window_size=self.win_size, 
+                                              hop_size=self.hop_size, 
+                                              fmin=self.fmin, 
+                                              fmax=self.fmax, 
+                                              center=self.center,
+                                              min_db=self.min_db, 
+                                              max_scaled_abs=self.max_scaled_abs)
+        
         
     def __len__(self):
         return len(self.metadata)
     
     def __getitem__(self, idx):
+
+        sample = self.metadata.iloc[idx]
         
-        audio_path = self.metadata.loc[idx, 'file_path']
-        transcript = self.metadata.loc[idx, 'normalized_text']
-        audio = load_wav(audio_path, self.sample_rate)
-        mel_spectrogram = self.audio_proc.audio2mel(audio, do_norm=self.normalize)
-        
-        return transcript, mel_spectrogram.squeeze(0)
-    
-    
+        path_to_audio = sample["file_path"]
+        transcript = sample["normalized_text"]
+
+        audio = load_wav(path_to_audio, sr=self.sample_rate)
+
+        mel = self.audio_proc.audio2mel(audio, do_norm=True)
+
+        return transcript, mel.squeeze(0)
+
 def TTSCollator():
-    '''
-    Collate function for Text-to-Speech (TTS) training.
-    '''
-    
+
     tokenizer = Tokenizer()
-    
+
     def _collate_fn(batch):
-        '''
-        Collate function for Text-to-Speech (TTS) training.
-        inputs:
-            batch (list): list of tuples (transcript, mel_spectrogram)
-        outputs:
-            text_padded (torch.Tensor): padded text sequences
-            mel_padded (torch.Tensor): padded mel spectrogram sequences
-            gate_padded (torch.Tensor): padded gate sequences
-            masked_text_padded (torch.Tensor): padded masked text sequences
-            masked_mel_padded (torch.Tensor): padded masked mel spectrogram sequences
-        '''
+        
         texts = [tokenizer.encode(b[0]) for b in batch]
         mels = [b[1] for b in batch]
         
-        input_lengths = torch.LongTensor([text.shape[0] for text in texts])
-        output_lengths = torch.LongTensor([mel.shape[1] for mel in mels]) # each mel spectogram is n_mels, num_timestep
-        
+        ### Get Lengths of Texts and Mels ###
+        input_lengths = torch.tensor([t.shape[0] for t in texts], dtype=torch.long)
+        output_lengths = torch.tensor([m.shape[1] for m in mels], dtype=torch.long)
+
+        ### Sort by Text Length (as we will be using packed tensors later) ###
         input_lengths, sorted_idx = input_lengths.sort(descending=True)
         texts = [texts[i] for i in sorted_idx]
         mels = [mels[i] for i in sorted_idx]
         output_lengths = output_lengths[sorted_idx]
-        
-        # much more efficient
+
+        ### Pad Text ###
         text_padded = torch.nn.utils.rnn.pad_sequence(texts, batch_first=True, padding_value=tokenizer.pad_token_id)
 
-        # pad mel sequences
-        max_target_len = torch.max(output_lengths).item()
-        num_mels = mels[0].shape[0] # n_mels 80 by default
+        ### Pad Mel Sequences ###
+        max_target_len = max(output_lengths).item()
+        num_mels = mels[0].shape[0]
         
+        ### Get gate which tells when to stop decoding. 0 is keep decoding, 1 is stop ###
         mel_padded = torch.zeros((len(mels), num_mels, max_target_len))
-        gate_padded = torch.zeros(len(mels), max_target_len) # when we should stop making predictions
-        
+        gate_padded = torch.zeros((len(mels), max_target_len))
+
         for i, mel in enumerate(mels):
             t = mel.shape[1]
             mel_padded[i, :, :t] = mel
             gate_padded[i, t-1:] = 1
-            
-        mel_padded = mel_padded.transpose(1, 2) # batch_size, num_mels, timesteps
         
-        return text_padded, input_lengths,mel_padded, gate_padded, build_padding_mask(input_lengths), build_padding_mask(output_lengths)
-    
-    
+        mel_padded = mel_padded.transpose(1,2)
+
+        return text_padded, input_lengths, mel_padded, gate_padded, build_padding_mask(input_lengths), build_padding_mask(output_lengths)
+
+
     return _collate_fn
-            
 
 class BatchSampler:
-    '''
-    Docstring for BatchSampler
-    '''
     def __init__(self, dataset, batch_size, drop_last=False):
         self.sampler = torch.utils.data.SequentialSampler(dataset)
         self.batch_size = batch_size
@@ -162,21 +277,6 @@ if __name__ == '__main__':
     train_sampler = BatchSampler(dataset, batch_size=4)
     train_loader = DataLoader(dataset, collate_fn=collator, batch_sampler=train_sampler)
     
-    for text_padded, text_lenght, mel_padded, gate_padded, masked_text_padded, masked_mel_padded in train_loader:
+    for text_padded, text_lengths, mel_padded, gate_padded, masked_text_padded, masked_mel_padded in train_loader:
         print(text_padded.shape, mel_padded.shape, gate_padded.shape, masked_text_padded.shape, masked_mel_padded.shape)
         break
-        
-
-    
-            
-            
-
-
-            
-
-
-
-
-
-
-
