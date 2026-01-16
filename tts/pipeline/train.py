@@ -1,218 +1,211 @@
 import os
+import logging
+
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio.transforms as AT
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR
-from transformers import set_seed
-from accelerate import Accelerator
+
+from tqdm import trange
+from tqdm import tqdm
+
+
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-from tts.model.model import Tacotron2Config, Tacotron2
-from tts.dataset.dataset import TTSDataset,TTSCollator, BatchSampler
+from tts.dataset.dataset import TTSDataset, TTSCollator, BatchSampler
+from tts.model.loss import Tacotron2Loss
 from tts.dataset.utils import denormalize
-from tts.component.tokenizer import Tokenizer
+from tts.dataset.config import TTSDatasetConfig
+from tts.model.model import FeaturePredictNet
 
-NUM_EPOCHS = 50
-CONSOLE_OUT_ITERS = 5
-CHECKPOINT_EPOCHS = 5
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler("training.log")])
+os.environ["TOKENIZERS_PARALLELISM"] = "True"
+
+model_config = Tacotron2Config()
+dataset_config = TTSDatasetConfig()
+
+
+# Resume training configuration
+RESUME_TRAINING = False  # Set to True to resume from checkpoint
+CHECKPOINT_PATH = "checkpoints/model_checkpoint_v3.pt"
+CHECKPOINT_DIR = "checkpoints"
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# Training configuration
 BATCH_SIZE = 32
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 1e-6
-ADAM_EPS = 1e-6
+NUM_EPOCHS = 100
+LEARNING_RATE = 1e-3
 MIN_LEARNING_RATE = 1e-5
-START_DECAY_EPOCHS = None
-save_audio_gen = "audio_gen"
-TRAIN_MANIFEST = "data/train.csv"
-VAL_MANIFEST = "data/test.csv"
-RESUME_FROM_CHECKPOINT = False
-SEED = 42
-EXPERIMENT_NAME = "trailv1"
-RUN_NAME = "run1"
-WORKING_DIRECTORY = "experiments/"
+EPSILON = 1e-6
+L2_REG = 1e-6
+START_DECAY_EPOCHS = 5
+NUM_WORKERS = 10
+PREFETCH_FACTOR = 24
+SAVE_AUDIO_GEN = "generated_audio"
 
-### Set Seed ###
-set_seed(SEED)
+os.makedirs(SAVE_AUDIO_GEN, exist_ok=True)
 
-### Init Accelerator ###
-path_to_experiment = os.path.join(WORKING_DIRECTORY, EXPERIMENT_NAME)
-accelerator = Accelerator(project_dir=path_to_experiment,
-                          log_with=None)
+TRAIN_DATASET_PATH = "data/train.csv"
+VALIDATION_DATASET_PATH = "data/test.csv"
 
-### Create Paths for Gen Saves ###
-if accelerator.is_main_process:
-    os.makedirs(save_audio_gen, exist_ok=True)
+USE_MEL = True
 
-### Load Tokenizer ###
-tokenizer = Tokenizer()
-
-### Load Model ###
-config = Tacotron2Config()
-
-model = Tacotron2(config) 
-total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-accelerator.print(f"Total Trainable Parameters: {total_trainable_params}")
-
-### Load Optimizer ###
-optimizer = torch.optim.Adam(model.parameters(), 
-                             lr=LEARNING_RATE, 
-                             weight_decay=WEIGHT_DECAY, 
-                             eps=ADAM_EPS)
-
-### Load Dataset ###
-trainset = TTSDataset(TRAIN_MANIFEST)
-
-testset = TTSDataset(VAL_MANIFEST)
-
+# dataset loaded
+train_dataset = TTSDataset(TRAIN_DATASET_PATH, return_mel=USE_MEL)
+validation_dataset = TTSDataset(VALIDATION_DATASET_PATH, return_mel=USE_MEL)
 collator = TTSCollator()
-train_sampler = BatchSampler(trainset, 
-                             batch_size=BATCH_SIZE, 
-                             drop_last=accelerator.num_processes > 1)
+train_sampler = BatchSampler(train_dataset, batch_size=BATCH_SIZE, drop_last=True)
 
-trainloader = DataLoader(trainset, 
-                         batch_sampler=train_sampler, 
-                         num_workers=0,
-                         collate_fn=collator)
+train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=collator,
+                          num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR, pin_memory=True)
+validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collate_fn=collator,
+                               num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR, pin_memory=True)
 
-testloader = DataLoader(testset, 
-                        batch_size=BATCH_SIZE, 
-                        num_workers=0,
-                        collate_fn=collator)
+# model
+num_chars = len(train_dataset.tokenizer())
+padding_idx = train_dataset.tokenizer().pad_token_id
+feature_dim = dataset_config.n_fft // 2 + 1 if USE_MEL else dataset_config.n_mels
 
-### Prepare Everything ###
-model, optimizer, trainloader, testloader = accelerator.prepare(
-    model, optimizer, trainloader, testloader
-)
+model = FeaturePredictNet(num_chars, padding_idx, feature_dim)
+model.to(DEVICE)
+optimizer = torch.optim.Adam(model.parameters(),
+        lr=LEARNING_RATE, eps=EPSILON,
+        weight_decay=L2_REG, betas=(0.9, 0.999))
+criterion = FeaturePredictNetLoss()
 
-### Create Scheduler ###
-using_scheduler = False
-if START_DECAY_EPOCHS is not None:
-    accelerator.print("Using LR Scheduler!!")
-    using_scheduler = True
-    init_lr = LEARNING_RATE
-    min_lr = MIN_LEARNING_RATE
-    decay_epochs = NUM_EPOCHS - START_DECAY_EPOCHS
-    decay_gamma = (min_lr / init_lr) ** (1 / decay_epochs)
 
-    def lr_lambda(epoch):
-        if epoch < START_DECAY_EPOCHS:
-            return 1.0
-        else:
-            return decay_gamma ** (epoch - START_DECAY_EPOCHS)
+total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+logging.info(f"Total trainable parameters: {total_trainable_params}")
 
-### Load Checkpoint ###
-if RESUME_FROM_CHECKPOINT:
+if RESUME_TRAINING and os.path.exists(CHECKPOINT_PATH):
+    logging.info("Loading from checkpoint: %s", CHECKPOINT_PATH)
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    start_epoch = checkpoint['epoch'] + 1
+    best_validation_loss = checkpoint['best_validation_loss']
 
-    ### Grab path to checkpoint ###
-    path_to_checkpoint = os.path.join(path_to_experiment, RESUME_FROM_CHECKPOINT)
-
-    with accelerator.main_process_first():
-        accelerator.load_state(path_to_checkpoint)
+    # Load history
+    train_losses = checkpoint['train_losses']
+    validation_losses = checkpoint['validation_losses']
     
-    ### Start completed steps from checkpoint index ###
-    completed_epochs = int(RESUME_FROM_CHECKPOINT.split("_")[-1]) + 1
-    completed_steps = completed_epochs * len(trainloader)
-    accelerator.print(f"Resuming from Epoch: {completed_epochs}")
+    # granular losses
+    train_mel_losses = checkpoint.get('train_mel_losses', [])
+    train_refined_mel_losses = checkpoint.get('train_refined_mel_losses', [])
+    train_stop_losses = checkpoint.get('train_stop_losses', [])
 
-    if using_scheduler:
-        scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda, last_epoch=completed_epochs-1)
+    val_mel_losses = checkpoint.get('val_mel_losses', [])
+    val_refined_mel_losses = checkpoint.get('val_refined_mel_losses', [])
+    val_stop_losses = checkpoint.get('val_stop_losses', [])
 
+    logging.info(f"Resumed training from epoch {start_epoch} with best validation loss: {best_validation_loss:.4f}")
 else:
-    completed_epochs = 0
-    completed_steps = 0
-
-    if using_scheduler:
-        scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
-
-### Train Model ###
-for epoch in range(completed_epochs, NUM_EPOCHS):
+    logging.info("Starting training from scratch")
+    start_epoch = 0
+    best_validation_loss = float('inf')
+    train_losses = []
+    validation_losses = []
     
-    accelerator.print(f"Epoch: {epoch}")
+    # granular losses
+    train_mel_losses = []
+    train_refined_mel_losses = []
+    train_stop_losses = []
 
-    model.train()
-    for texts, text_lens, mels, stops, encoder_mask, decoder_mask in trainloader:
-      
-        texts = texts.to(accelerator.device)
-        mels = mels.to(accelerator.device)
-        stops = stops.to(accelerator.device)
-        encoder_mask = encoder_mask.to(accelerator.device)
-        decoder_mask = decoder_mask.to(accelerator.device)
+    val_mel_losses = []
+    val_refined_mel_losses = []
+    val_stop_losses = []
+
+try:
+    epoch_range = trange(start_epoch, NUM_EPOCHS, leave=False, desc="Epoch")
+    for epoch in epoch_range:
+    
+        model.train()
+        losses = []
+        batch_mel_losses = []
+        batch_refined_mel_losses = []
+        batch_stop_losses = []
+    
+        loop = tqdm(enumerate(train_loader), leave=False, desc="Training Batch", total=len(train_loader))
+        for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
+            text_padded = text_padded.to(DEVICE)
+            input_lengths = input_lengths.to(DEVICE)
+            mel_padded = mel_padded.to(DEVICE)
+            gate_padded = gate_padded.to(DEVICE)
+            text_mask = text_mask.to(DEVICE)
+            mel_mask = mel_mask.to(DEVICE)
+
+            mels_out, mels_out_postnet, stop_outs, attention_weights = model(text_padded, input_lengths, mel_padded, text_mask, mel_mask) 
+            output = (mels_out, mels_out_postnet, stop_outs, attention_weights)
+            y_targets = (mel_padded, gate_padded)
+
+            loss, (loss1, loss2, stop_loss) = criterion(output, y_targets)
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            # metrics tracking
+            loss_item = loss.item()
+            loop.set_postfix(loss=loss_item)
+            losses.append(loss_item)
         
-        ### Generate Mel Spectrogram from Text ###
-        mels_out, mels_postnet_out, stop_preds, _ = model(
-            texts, text_lens.to("cpu"), mels, encoder_mask, decoder_mask
-        )
+            batch_mel_losses.append(loss1.item())
+            batch_refined_mel_losses.append(loss2.item())
+            batch_stop_losses.append(stop_loss.item())
+    
+        train_loss = sum(losses) / len(losses)
+        train_losses.append(train_loss)
+    
+        train_mel_losses.append(sum(batch_mel_losses) / len(batch_mel_losses))
+        train_refined_mel_losses.append(sum(batch_refined_mel_losses) / len(batch_refined_mel_losses))
+        train_stop_losses.append(sum(batch_stop_losses) / len(batch_stop_losses))
+    
+        model.eval()
+        losses = []
+        batch_mel_losses = []
+        batch_refined_mel_losses = []
+        batch_stop_losses = []
+    
+        loop = tqdm(enumerate(validation_loader), leave=False, desc="Validation Batch", total=len(validation_loader))
+        save_first = True
+        for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
+            text_padded = text_padded.to(DEVICE)
+            input_lengths = input_lengths.to(DEVICE)
+            mel_padded = mel_padded.to(DEVICE)
+            gate_padded = gate_padded.to(DEVICE)
+            text_mask = text_mask.to(DEVICE)
+            mel_mask = mel_mask.to(DEVICE)
 
-        ### Compute Loss ###
-        mel_loss = F.mse_loss(mels_out, mels)
-        refined_mel_loss = F.mse_loss(mels_postnet_out, mels)
-        stop_loss = F.binary_cross_entropy_with_logits(stop_preds.reshape(-1,1), stops.reshape(-1,1))
+            with torch.inference_mode():
+                mels_out, mels_out_postnet, stop_outs, attention_weights = model(text_padded, input_lengths, mel_padded, text_mask, mel_mask) 
 
-        loss = mel_loss + refined_mel_loss + stop_loss
+            loss, (loss1, loss2, stop_loss) = criterion((mels_out, mels_out_postnet, stop_outs, attention_weights), (mel_padded, gate_padded))
 
-        ### Update Model ###
-        accelerator.backward(loss)
-        accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        optimizer.zero_grad()
+            # metrics tracking
+            loss_item = loss.item()
+            loop.set_postfix(loss=loss_item)
+            losses.append(loss_item)
 
-        ### Grab Metrics from all GPUs for Logging ###
-        loss = torch.mean(accelerator.gather_for_metrics(loss)).item()
-        mel_loss = torch.mean(accelerator.gather_for_metrics(mel_loss)).item()
-        refined_mel_loss = torch.mean(accelerator.gather_for_metrics(refined_mel_loss)).item()
-        stop_loss = torch.mean(accelerator.gather_for_metrics(stop_loss)).item()
-
-        if completed_steps % CONSOLE_OUT_ITERS == 0:
-            accelerator.print("Completed Steps {}/{} | Loss {:.4f} | Mel Loss {:.4f} | RMel Loss {:.4f} | Stop Loss {:.4f}".format(
-                completed_steps, 
-                NUM_EPOCHS * len(trainloader), 
-                loss, 
-                mel_loss, 
-                refined_mel_loss, 
-                stop_loss
-            ))
-     
-        completed_steps +=1 
-
-    accelerator.wait_for_everyone()
-
-    ### Evaluate Model ###
-    model.eval()
-    accelerator.print("--VALIDATION--")
-    val_mel_loss, val_rmel_loss, val_stop_loss, num_losses = 0, 0, 0, 0
-    save_first = True
-    for texts, text_lens, mels, stops, encoder_mask, decoder_mask in testloader:
-        
-        texts = texts.to(accelerator.device)
-        mels = mels.to(accelerator.device)
-        stops = stops.to(accelerator.device)
-        encoder_mask = encoder_mask.to(accelerator.device)
-        decoder_mask = decoder_mask.to(accelerator.device)
-
-        ### Generate Mel Spectrogram from Text ###
-        with torch.no_grad():
-            mels_out, mels_postnet_out, stop_preds, attention_weights = model(
-                texts, text_lens.to("cpu"), mels, encoder_mask, decoder_mask
-            )
-
-        ### Compute Loss ###
-        mel_loss = F.mse_loss(mels_out, mels)
-        refined_mel_loss = F.mse_loss(mels_postnet_out, mels)
-        stop_loss = F.binary_cross_entropy_with_logits(stop_preds.reshape(-1,1), stops.reshape(-1,1))
-
-        val_mel_loss += mel_loss
-        val_rmel_loss += refined_mel_loss
-        val_stop_loss += stop_loss
-        num_losses += 1
-
-        if True:
+            batch_mel_losses.append(loss1.item())
+            batch_refined_mel_losses.append(loss2.item())
+            batch_stop_losses.append(stop_loss.item())
             if save_first:
+                save_first = False
+                true_mel = denormalize(mel_padded[0].T.to("cpu"))
+                pred_mel = denormalize(mels_out_postnet[0].T.to("cpu"))
+                attention = attention_weights[0].T.cpu().numpy()
 
-                # Extract tensors
-                true_mel = denormalize(mels[0].T.to("cpu"))
-                pred_mel = denormalize(mels_postnet_out[0].T.to("cpu"))
-                attention = attention_weights[0].T.to("cpu")
-
+                fig, axes = plt.subplots(3, 1, figsize=(8, 12))
                 # Make subplots (3 rows, 1 column)
                 fig, axes = plt.subplots(3, 1, figsize=(8, 12))
                 
@@ -237,38 +230,116 @@ for epoch in range(completed_epochs, NUM_EPOCHS):
 
                 # Adjust layout
                 plt.tight_layout()
-
-                # Save combined figure
-                plt.savefig(os.path.join(save_audio_gen, f"epoch_{epoch}_result.png"))
-
+                plt.savefig(os.path.join(SAVE_AUDIO_GEN, f"epoch_{epoch}_result.png"))
                 plt.close()
+    
+        validation_loss = sum(losses) / len(losses)
+        validation_losses.append(validation_loss)
+
+        val_mel_losses.append(sum(batch_mel_losses) / len(batch_mel_losses))
+        val_refined_mel_losses.append(sum(batch_refined_mel_losses) / len(batch_refined_mel_losses))
+        val_stop_losses.append(sum(batch_stop_losses) / len(batch_stop_losses))
+    
+        if validation_loss < best_validation_loss:
+            prev_best = best_validation_loss
+            best_validation_loss = validation_loss
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_validation_loss': best_validation_loss,
+            'train_losses': train_losses,
+            'validation_losses': validation_losses,
+            'train_mel_losses': train_mel_losses,
+            'train_refined_mel_losses': train_refined_mel_losses,
+            'train_stop_losses': train_stop_losses,
+            'val_mel_losses': val_mel_losses,
+            'val_refined_mel_losses': val_refined_mel_losses,
+            'val_stop_losses': val_stop_losses
+        }
+            torch.save(checkpoint, CHECKPOINT_PATH)
+            logging.info(f"Validation loss improved from {prev_best:.4f} to {validation_loss:.4f}. During Epoch {epoch}, Saved checkpoint to {CHECKPOINT_PATH}")
+
+except KeyboardInterrupt:
+    logging.info("Training interrupted by user. Generating plots...")
+
+finally:
+    def plot_losses():
+        if len(train_losses) == 0:
+            logging.info("No training data to plot.")
+            return
+
+        epochs = list(range(1, len(train_losses) + 1))
         
-        save_first = False
-    
-    val_mel_loss = torch.mean(accelerator.gather_for_metrics(val_mel_loss)).item() / num_losses
-    val_rmel_loss = torch.mean(accelerator.gather_for_metrics(val_rmel_loss)).item() / num_losses
-    val_stop_loss = torch.mean(accelerator.gather_for_metrics(val_stop_loss)).item() / num_losses
-    val_loss = val_mel_loss + val_rmel_loss + val_stop_loss
-    
-    accelerator.print("Loss {:.4f} | Mel Loss {:.4f} | RMel Loss {:.4f} | Stop Loss {:.4f}".format(
-                val_loss, 
-                val_mel_loss, 
-                val_rmel_loss, 
-                val_stop_loss
-            ))
-    
-    
-    if completed_epochs % CHECKPOINT_EPOCHS == 0:
-        accelerator.print("Saving Checkpoint!")
-        path_to_checkpoint = os.path.join(path_to_experiment, f"checkpoint_{completed_epochs}")
-        accelerator.save_state(output_dir=path_to_checkpoint, safe_serialization=False)
-    
-    completed_epochs += 1
+        fig = make_subplots(rows=2, cols=2, 
+                            subplot_titles=("Total Loss", "Mel Loss", "Refined Mel Loss", "Stop Loss"))
 
-    if using_scheduler:
-        scheduler.step(epoch=completed_epochs)
-        accelerator.print(f"Learning Rate: {scheduler.get_last_lr()[0]}")
+        # Total Loss
+        fig.add_trace(go.Scatter(x=epochs, y=train_losses, mode='lines', name='Train Total'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=epochs, y=validation_losses, mode='lines', name='Val Total'), row=1, col=1)
 
-accelerator.save_state(os.path.join(path_to_experiment, "final_checkpoint"), safe_serialization=False)
+        # Mel Loss
+        fig.add_trace(go.Scatter(x=epochs, y=train_mel_losses, mode='lines', name='Train Mel'), row=1, col=2)
+        fig.add_trace(go.Scatter(x=epochs, y=val_mel_losses, mode='lines', name='Val Mel'), row=1, col=2)
 
-accelerator.end_training()
+        # Refined Mel Loss
+        fig.add_trace(go.Scatter(x=epochs, y=train_refined_mel_losses, mode='lines', name='Train Refined'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=epochs, y=val_refined_mel_losses, mode='lines', name='Val Refined'), row=2, col=1)
+        
+        # Stop Loss
+        fig.add_trace(go.Scatter(x=epochs, y=train_stop_losses, mode='lines', name='Train Stop'), row=2, col=2)
+        fig.add_trace(go.Scatter(x=epochs, y=val_stop_losses, mode='lines', name='Val Stop'), row=2, col=2)
+
+        fig.update_layout(title_text="Training Metrics", height=800)
+        fig.write_html("training_losses.html")
+        logging.info("Saved training plots to training_losses.html")
+
+        # --- Matplotlib Plotting ---
+        try:
+            fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+            fig.suptitle('Training Metrics')
+
+            # Total Loss
+            axs[0, 0].plot(epochs, train_losses, label='Train Total')
+            axs[0, 0].plot(epochs, validation_losses, label='Val Total')
+            axs[0, 0].set_title('Total Loss')
+            axs[0, 0].legend()
+
+            # Mel Loss
+            axs[0, 1].plot(epochs, train_mel_losses, label='Train Mel')
+            axs[0, 1].plot(epochs, val_mel_losses, label='Val Mel')
+            axs[0, 1].set_title('Mel Loss')
+            axs[0, 1].legend()
+            
+            # Refined Mel Loss
+            axs[1, 0].plot(epochs, train_refined_mel_losses, label='Train Refined')
+            axs[1, 0].plot(epochs, val_refined_mel_losses, label='Val Refined')
+            axs[1, 0].set_title('Refined Mel Loss')
+            axs[1, 0].legend()
+            
+            # Stop Loss
+            axs[1, 1].plot(epochs, train_stop_losses, label='Train Stop')
+            axs[1, 1].plot(epochs, val_stop_losses, label='Val Stop')
+            axs[1, 1].set_title('Stop Loss')
+            axs[1, 1].legend()
+
+            plt.tight_layout()
+            plt.savefig("training_losses.png")
+            plt.close()
+            logging.info("Saved training plots to training_losses.png")
+        except Exception as e:
+            logging.error(f"Failed to generate matplotlib plot: {e}")
+
+    plot_losses()
+    
+        
+
+    
+    
+    
+    
+
+
+
+
+
