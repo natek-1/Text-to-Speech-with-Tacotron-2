@@ -2,7 +2,7 @@ from scipy import signal
 import torch
 import torchaudio
 
-def load_wav(path_to_audio, sr=22050):
+def load_wav_file(path_to_audio, sr=22050):
     '''
     Loads an audio file and returns the waveform as a PyTorch tensor.
     
@@ -28,7 +28,7 @@ def amp_to_db(x, min_db=-100):
     Outputs:
         db (torch.Tensor): Decibel tensor.
     '''
-    clip_val = 10 ** (min_db / 20)
+    clip_val = 10 ** (min_db / 20) # = 10^(-100/20) = 10^(-5) = 0.00001 = 1e-5
     x = torch.clamp(x, min=clip_val)
     return 20 * torch.log10(x)
 
@@ -56,7 +56,7 @@ def normalize(x, min_db=-100., max_abs_val=4):
         normalized (torch.Tensor): Normalized tensor.
     '''
     x = (x - min_db) / -min_db
-    x = 2*max_abs_val * x - max_abs_val
+    x = 2 * max_abs_val * x - max_abs_val
     return torch.clip(x, min=-max_abs_val, max=max_abs_val)
 
 def denormalize(x, min_db=-100., max_abs_val=4):
@@ -85,7 +85,7 @@ def preemphasis(x, alpha=0.97):
     '''
     return signal.lfilter([1, -alpha], [1], x)
 
-def inv_preemphasis(x, alpha):
+def inv_preemphasis(x, alpha=0.97):
     '''
     de-emphasis on audio signnal
     Inputs:
@@ -93,21 +93,4 @@ def inv_preemphasis(x, alpha):
     '''
     return signal.lfilter([1], [1, -alpha], x)
 
-
-def build_padding_mask(lengths):
-    '''
-    Builds Padding Mask for Tensor of provided length
-    Inputs:
-        lengths (torch.Tensor): Tensor containing the length of encoded tokens
-    Ouputs:
-        mask (torch.Tensor): Tensor containing the padding mask
-    '''
-    B = lengths.shape[0]
-    T = torch.max(lengths).item()
-    
-    mask = torch.zeros(B, T)
-    for idx, length in enumerate(lengths):
-        mask[idx,length:] = 1
-    
-    return mask.bool()
     

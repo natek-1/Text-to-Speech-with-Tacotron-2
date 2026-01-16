@@ -4,7 +4,7 @@ import torch
 
 import librosa
 
-from tts.dataset.utils import load_wav, normalize, denormalize, amp_to_db, db_to_amp
+from tts.dataset.utils import normalize, denormalize, amp_to_db, db_to_amp, preemphasis, inv_preemphasis, load_wav_file
 
 
 class AudioMelConversions:
@@ -20,10 +20,14 @@ class AudioMelConversions:
         fmax (int): Maximum frequency for mel filter bank.
         min_db (float): Minimum decibel value for normalization.
         max_abs_val (float): Maximum absolute value for normalization.
+        floor_freq (float): Minimum frequency for mel filter bank.
+        ref_level_db (float): Reference level for mel filter bank.
+        alpha (float): Pre-emphasis coefficient.
     '''
     
     def __init__(self, sr=22050, n_fft=1024, hop_length=256, win_length=1024,
-                 num_mels=80, fmin=0, fmax=8000, center=False, min_db=-100., max_abs_val=4):
+                 num_mels=80, fmin=0, fmax=8000, center=True, min_db=-100., max_abs_val=4,
+                 floor_freq = 0.01, ref_level_db = 20, alpha=0.97):
         self.sr = sr
         self.n_fft = n_fft
         self.hop_length = hop_length
@@ -34,6 +38,9 @@ class AudioMelConversions:
         self.center = center
         self.min_db = min_db
         self.max_abs_val = max_abs_val
+        self.floor_freq = floor_freq
+        self.ref_level_db = ref_level_db
+        self.alpha = alpha
         
         # freq_bins = n_fft/2 + 1
         self.spec2mel = self._get_spec2mel_proj() # shape (num_mels, freq_bins)
@@ -65,7 +72,7 @@ class AudioMelConversions:
             audio = torch.FloatTensor(audio)
         
         stft = torch.stft(audio, n_fft=self.n_fft, hop_length=self.hop_length,
-                          win_length=self.win_length, window=torch.hann_window(self.win_length).to(audio.device),
+                          win_length=self.win_length, window=torch.hann_window(self.win_length, periodic=True).to(audio.device),
                           center=self.center, pad_mode='reflect', normalized=False, onesided=True,
                           return_complex=True)
         spectrogram = torch.abs(stft)  # (freq_bins, time_frames)
@@ -76,6 +83,36 @@ class AudioMelConversions:
             mel_spectrogram_db = normalize(mel_spectrogram_db, min_db=self.min_db, max_abs_val=self.max_abs_val)
             
         return mel_spectrogram_db
+    
+    def audio2spec(self, audio, do_norm=True):
+        '''
+        Converts an audio waveform to a spectrogram. (not mel-spectrogram)
+
+        Inputs:
+            audio (torch.Tensor): Input audio waveform. of shape (time_frames)
+            do_norm (bool): Whether to normalize the spectrogram.
+        Outputs:
+            spectrogram (torch.Tensor): Spectrogram of shape (freq_bins, time_frames).
+                        where freq_bins = n_fft/2 + 1
+        '''
+        if not isinstance(audio, torch.Tensor):
+            audio = torch.FloatTensor(audio)
+        
+        audio = preemphasis(audio, alpha=self.alpha)
+        audio = torch.FloatTensor(audio)
+        
+        stft = torch.stft(audio, n_fft=self.n_fft, hop_length=self.hop_length,
+                          win_length=self.win_length, window=torch.hann_window(self.win_length, periodic=True).to(audio.device),
+                          center=self.center, pad_mode='reflect', normalized=False, onesided=True,
+                          return_complex=True)
+        spectrogram = torch.abs(stft)  # (freq_bins, time_frames)
+        spectrogram_db = amp_to_db(spectrogram) - self.ref_level_db
+        
+        if do_norm:
+            spectrogram_db = normalize(spectrogram_db, min_db=self.min_db, max_abs_val=self.max_abs_val)
+            
+        return spectrogram_db
+
     
     
     def mel2audio(self, mel_spectrogram, num_iters=60, do_denorm=False):
@@ -98,8 +135,30 @@ class AudioMelConversions:
         
         # Griffin-Lim algorithm
         audio = librosa.griffinlim(S=spectrogram_approx, n_iter=num_iters, hop_length=self.hop_length, win_length=self.win_length,
-                                   n_fft=self.n_fft, window="hann")
+                                   n_fft=self.n_fft, window="hann", center=self.center)
 
+        audio *= 32767 / max(0.01, np.max(np.abs(audio)))
+        return audio.astype(np.int16)
+
+    def spec2audio(self, spectrogram, num_iters=60, do_denorm=True):
+        '''
+        Converts a spectrogram back to an audio waveform using the Griffin-Lim algorithm.
+        
+        Inputs:
+            spectrogram (torch.Tensor): Input spectrogram. of shape (freq_bins, time_frames)
+            num_iters (int): Number of iterations for Griffin-Lim.
+            do_denorm (bool): Whether to denormalize the spectrogram.
+        Outputs:
+            audio (torch.Tensor): Reconstructed audio waveform. of shape (time_frames)
+        '''
+        if do_denorm:
+            spectrogram = denormalize(spectrogram, min_db=self.min_db, max_abs_val=self.max_abs_val)
+
+        spectrogram_amp = db_to_amp(spectrogram + self.ref_level_db)
+        
+        audio = librosa.griffinlim(S=spectrogram_amp.cpu().numpy(), n_iter=num_iters, hop_length=self.hop_length, win_length=self.win_length,
+                                   n_fft=self.n_fft, window="hann", center=self.center)
+        audio = inv_preemphasis(audio, alpha=self.alpha)
         audio *= 32767 / max(0.01, np.max(np.abs(audio)))
         return audio.astype(np.int16)
     

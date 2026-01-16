@@ -16,4 +16,5 @@ class TTSDatasetConfig:
     batch_size: int = 4
     num_workers: int = 0
     drop_last: bool = False
+    alpha: float = 0.97
     
