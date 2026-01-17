@@ -16,10 +16,10 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from tts.dataset.dataset import TTSDataset, TTSCollator, BatchSampler
+from tts.dataset.data import LJSpeechDataset, RandomBucketBatchSampler, TextAudioCollate
 from tts.model.loss import FeaturePredictNetLoss
-from tts.dataset.utils import denormalize
-from tts.dataset.config import TTSDatasetConfig
+from tts.dataset.audio_process import _denormalize
+from tts.dataset.text_process import pad, char_to_id
 from tts.model.model import FeaturePredictNet
 
 logging.basicConfig(level=logging.INFO,
@@ -33,7 +33,7 @@ dataset_config = TTSDatasetConfig()
 ## TODO inference on the first 5 elements of the first validation batch
 ## TODO: Save audio generation (from inference) in epoch directory for the first 5 elements of the first validation batch
 ## TODO: experiment on using mel spectrogram as input instead of regular spectograms
-## 
+## TODO: investigate loss differences.
 
 
 # Resume training configuration
@@ -59,16 +59,17 @@ SAVE_AUDIO_GEN = "generated_audio"
 
 os.makedirs(SAVE_AUDIO_GEN, exist_ok=True)
 
+BASE_DIR = "LJSpeech-1.1"
 TRAIN_DATASET_PATH = "data/train.csv"
 VALIDATION_DATASET_PATH = "data/test.csv"
 
 USE_MEL = True
 
 # dataset loaded
-train_dataset = TTSDataset(TRAIN_DATASET_PATH, return_spectogram=USE_MEL)
-validation_dataset = TTSDataset(VALIDATION_DATASET_PATH, return_spectogram=USE_MEL)
-collator = TTSCollator()
-train_sampler = BatchSampler(train_dataset, batch_size=BATCH_SIZE, drop_last=True)
+train_dataset = LJSpeechDataset(BASE_DIR, TRAIN_DATASET_PATH)
+validation_dataset = LJSpeechDataset(BASE_DIR, VALIDATION_DATASET_PATH)
+collator = TextAudioCollate()
+train_sampler = RandomBucketBatchSampler(train_dataset, batch_size=BATCH_SIZE, drop_last=True)
 
 train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=collator,
                           num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR, pin_memory=True)
@@ -76,8 +77,8 @@ validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collat
                                num_workers=NUM_WORKERS, prefetch_factor=PREFETCH_FACTOR, pin_memory=True)
 
 # model
-num_chars = train_dataset.tokenizer.vocab_size
-padding_idx = train_dataset.tokenizer.pad_token_id
+num_chars = len(char_to_id)
+padding_idx = char_to_id.get(pad)
 feature_dim = dataset_config.n_fft // 2 + 1 if USE_MEL else dataset_config.n_mels
 
 model = FeaturePredictNet(num_chars, padding_idx, feature_dim)
@@ -206,8 +207,8 @@ try:
             batch_stop_losses.append(stop_loss.item())
             if save_first:
                 save_first = False
-                true_mel = denormalize(mel_padded[0].T.to("cpu"))
-                pred_mel = denormalize(mels_out_postnet[0].T.to("cpu"))
+                true_mel = _denormalize(mel_padded[0].T.to("cpu"))
+                pred_mel = _denormalize(mels_out_postnet[0].T.to("cpu"))
                 attention = attention_weights[0].T.cpu().numpy()
 
                 fig, axes = plt.subplots(3, 1, figsize=(8, 12))
