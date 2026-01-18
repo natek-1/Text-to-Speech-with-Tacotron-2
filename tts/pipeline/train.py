@@ -41,14 +41,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # Training configuration
-BATCH_SIZE = 32
-NUM_EPOCHS = 100
+BATCH_SIZE = 64
+NUM_EPOCHS = 200
 LEARNING_RATE = 0.001
 MIN_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-6
 EPSILON = 1e-6
 START_DECAY_EPOCHS = 5
-NUM_WORKERS = 10
+NUM_WORKERS = 3
 PREFETCH_FACTOR = 24
 SAVE_AUDIO_GEN = "generated_audio"
 

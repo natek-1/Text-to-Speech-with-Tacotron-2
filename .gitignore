@@ -211,3 +211,4 @@ __marimo__/
 LJSpeech-1.1
 data
 checkpoints
+generated_audio/
