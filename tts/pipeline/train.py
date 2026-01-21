@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from tqdm import trange
 from tqdm import tqdm
 
+from scipy.io.wavfile import write
 
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
@@ -21,6 +22,9 @@ from tts.dataset.utils import denormalize
 from tts.dataset.config import TTSDatasetConfig
 from tts.model.tacotron import Tacotron2
 from tts.model.config import Tacotron2Config
+from tts.component.tokenizer import Tokenizer
+from tts.dataset.conversion import AudioMelConversions
+
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -51,6 +55,8 @@ START_DECAY_EPOCHS = 5
 NUM_WORKERS = 10
 PREFETCH_FACTOR = 24
 SAVE_AUDIO_GEN = "generated_audio"
+INFER_EVERY = 1
+SAMPLING_RATE = 22050
 
 os.makedirs(SAVE_AUDIO_GEN, exist_ok=True)
 
@@ -72,9 +78,58 @@ validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, collat
 model = Tacotron2(model_config)
 model.to(DEVICE)
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY, eps=EPSILON)
+a2m = AudioMelConversions()
+tokenizer = Tokenizer()
 
 total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 logging.info(f"Total trainable parameters: {total_trainable_params}")
+
+
+def save_training_inference(true_mel, pred_mel, attention_weights, text, file_path, sample_num):
+    '''
+    Save true mel and generated audio for training inference
+    intputs:
+        true_mel (torch.Tensor): true mel spectrogram
+        pred_mel (torch.Tensor): predicted mel spectrogram
+        attention_weights (torch.Tensor): attention weights generated
+        text (torch.tensor): tokenized text
+        file_path (str): file path to save the inference
+        sample_num (int): sample number
+    '''
+    fig, axes = plt.subplots(3, 1, figsize=(8, 12))
+    
+    # True Mel
+    im0 = axes[0].imshow(true_mel, aspect='auto', origin='lower', interpolation='none')
+    axes[0].set_title("True Mel")
+    axes[0].set_ylabel("Mel bins")
+    fig.colorbar(im0, ax=axes[0])
+
+    # Predicted Mel
+    im1 = axes[1].imshow(pred_mel, aspect='auto', origin='lower', interpolation='none')
+    axes[1].set_title("Predicted Mel")
+    axes[1].set_ylabel("Mel bins")
+    fig.colorbar(im1, ax=axes[1])
+
+    # Attention
+    im2 = axes[2].imshow(attention_weights, aspect='auto', origin='lower', interpolation='none')
+    axes[2].set_title("Alignment")
+    axes[2].set_ylabel("Character Index")
+    axes[2].set_xlabel("Decoder Mel Timesteps")
+    fig.colorbar(im2, ax=axes[2])
+
+    # Adjust layout
+    plt.tight_layout()
+    plt.savefig(os.path.join(file_path, f"result_{sample_num}.png"))
+    plt.close()
+
+    # save text
+    with open(os.path.join(file_path, f"text_{sample_num}.txt"), "w") as f:
+        f.write(tokenizer.decode(text))
+    
+    audio = a2m.mel2audio(pred_mel, do_denorm=True).cpu()
+    audio_path = os.path.join(file_path, f"audio_{sample_num}.wav")
+    write(audio_path, SAMPLING_RATE, audio.numpy())
+    
 
 # scheduler
 use_scheduler = False
@@ -187,7 +242,6 @@ try:
         batch_stop_losses = []
     
         loop = tqdm(enumerate(validation_loader), leave=False, desc="Validation Batch", total=len(validation_loader))
-        save_first = True
         for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
             text_padded = text_padded.to(DEVICE)
             input_lengths = input_lengths.to(DEVICE)
@@ -212,39 +266,23 @@ try:
             batch_mel_losses.append(mel_loss.item())
             batch_refined_mel_losses.append(refined_mel_loss.item())
             batch_stop_losses.append(stop_loss.item())
-            if save_first:
-                save_first = False
-                true_mel = denormalize(mel_padded[0].T.to("cpu"))
-                pred_mel = denormalize(mels_out_postnet[0].T.to("cpu"))
-                attention = attention_weights[0].T.cpu().numpy()
-
-                fig, axes = plt.subplots(3, 1, figsize=(8, 12))
-                # Make subplots (3 rows, 1 column)
-                fig, axes = plt.subplots(3, 1, figsize=(8, 12))
-                
-                # True Mel
-                im0 = axes[0].imshow(true_mel, aspect='auto', origin='lower', interpolation='none')
-                axes[0].set_title("True Mel")
-                axes[0].set_ylabel("Mel bins")
-                fig.colorbar(im0, ax=axes[0])
-
-                # Predicted Mel
-                im1 = axes[1].imshow(pred_mel, aspect='auto', origin='lower', interpolation='none')
-                axes[1].set_title("Predicted Mel")
-                axes[1].set_ylabel("Mel bins")
-                fig.colorbar(im1, ax=axes[1])
-
-                # Attention
-                im2 = axes[2].imshow(attention, aspect='auto', origin='lower', interpolation='none')
-                axes[2].set_title("Alignment")
-                axes[2].set_ylabel("Character Index")
-                axes[2].set_xlabel("Decoder Mel Timesteps")
-                fig.colorbar(im2, ax=axes[2])
-
-                # Adjust layout
-                plt.tight_layout()
-                plt.savefig(os.path.join(SAVE_AUDIO_GEN, f"epoch_{epoch}_result.png"))
-                plt.close()
+            if epoch % INFER_EVERY == 0:
+                # inference on the first 10 elements of this batch
+                true_mels, pred_mels, attentions, texts = [], [], [], []
+                for i in range(10): 
+                    pred_mel, attention = model.inference(text_padded[i]) # should be on device during inference
+                    true_mel = denormalize(mel_padded[i].T.to("cpu"))
+                    pred_mel = denormalize(pred_mel.T.to("cpu"))
+                    attention = attention.T.cpu().numpy()
+                    true_mels.append(true_mel)
+                    pred_mels.append(pred_mel)
+                    attentions.append(attention)
+                    texts.append(text_padded[i])
+                file_dir = f"{SAVE_AUDIO_GEN}/epoch_{epoch}"
+                os.makedirs(file_dir, exist_ok=True)
+                save_audio_generation(true_mels, pred_mels, attentions, texts, file_dir)
+                model_save_file = f"{file_dir}/model.pt"
+                torch.save(model.state_dict(), model_save_file)
     
         validation_loss = sum(losses) / len(losses)
         validation_losses.append(validation_loss)
