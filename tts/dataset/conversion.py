@@ -65,7 +65,7 @@ class AudioMelConversions:
             audio = torch.FloatTensor(audio)
         
         stft = torch.stft(audio, n_fft=self.n_fft, hop_length=self.hop_length,
-                          win_length=self.win_length, window=torch.hann_window(self.win_length).to(audio.device),
+                          win_length=self.win_length, window=torch.hann_window(self.win_length, periodic=True).to(audio.device),
                           center=self.center, pad_mode='reflect', normalized=False, onesided=True,
                           return_complex=True)
         spectrogram = torch.abs(stft)  # (freq_bins, time_frames)

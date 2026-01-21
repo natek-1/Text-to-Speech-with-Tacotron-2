@@ -22,7 +22,7 @@ class Tacotron2Config:
     decoder_embed_dim: int = 1024
     decoder_prenet_dim: int = 256
     decoder_prenet_num_layers: int = 2
-    decoder_prenet_dropout: float = 0.1
+    decoder_prenet_dropout: float = 0.5 # might drop to 0.1 if experiencing underfitting
     decoder_postnet_num_conv: int = 5
     decoder_postnet_num_filters: int = 512
     decoder_postnet_kernel_size: int = 5

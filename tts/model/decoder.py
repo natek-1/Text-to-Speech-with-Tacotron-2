@@ -5,8 +5,6 @@ from tts.model.layers import LinearNorm, ConvNorm
 from tts.model.attention import LocalSensitiveAttention
 from tts.model.config import Tacotron2Config
 
-import logging as logging
-
 
 
 
@@ -22,7 +20,7 @@ class Prenet(nn.Module):
         prenet_depth (int): prenet depth
         dropout (float): dropout rate
     """
-    def __init__(self, input_dim, prenet_dim, prenet_depth, dropout=0.1):
+    def __init__(self, input_dim, prenet_dim, prenet_depth, dropout=0.5):
         super(Prenet, self).__init__()
         self.dropout = dropout
         dims = [input_dim] + [prenet_dim for _ in range(prenet_depth)]
@@ -101,7 +99,7 @@ class Postnet(nn.Module):
         '''
         x = x.transpose(1, 2) # (batch_size, num_mels, seq_len)
         for conv in self.convolutions:
-            x = F.dropout(conv(x), p=self.dropout, training=self.training)
+            x = F.dropout(conv(x), p=self.dropout, training=True) # force training to true (even during inference) for now...
         x = x.transpose(1, 2) # (batch_size, seq_len, num_mels)
         return x
 
