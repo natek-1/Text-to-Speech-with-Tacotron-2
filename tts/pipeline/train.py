@@ -85,18 +85,19 @@ total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires
 logging.info(f"Total trainable parameters: {total_trainable_params}")
 
 
-def save_training_inference(true_mel, pred_mel, attention_weights, text, file_path, sample_num):
+def save_training_inference(true_mel, pred_mel, attention_weights, teacher_forced_pred, text, file_path, sample_num):
     '''
     Save true mel and generated audio for training inference
     intputs:
         true_mel (torch.Tensor): true mel spectrogram
         pred_mel (torch.Tensor): predicted mel spectrogram
         attention_weights (torch.Tensor): attention weights generated
+        teacher_forced_pred (torch.Tensor): teacher forced predicted mel spectrogram
         text (torch.tensor): tokenized text
         file_path (str): file path to save the inference
         sample_num (int): sample number
     '''
-    fig, axes = plt.subplots(3, 1, figsize=(8, 12))
+    fig, axes = plt.subplots(4, 1, figsize=(8, 12))
     file_path = os.path.join(file_path, f"sample_{sample_num}/")
     os.makedirs(file_path, exist_ok=True)
     
@@ -106,18 +107,24 @@ def save_training_inference(true_mel, pred_mel, attention_weights, text, file_pa
     axes[0].set_ylabel("Mel bins")
     fig.colorbar(im0, ax=axes[0])
 
-    # Predicted Mel
-    im1 = axes[1].imshow(pred_mel, aspect='auto', origin='lower', interpolation='none')
-    axes[1].set_title("Predicted Mel")
+    # Teacher Forced Predicted Mel
+    im1 = axes[1].imshow(teacher_forced_pred, aspect='auto', origin='lower', interpolation='none')
+    axes[1].set_title("Teacher Forced Predicted Mel")
     axes[1].set_ylabel("Mel bins")
     fig.colorbar(im1, ax=axes[1])
 
-    # Attention
-    im2 = axes[2].imshow(attention_weights, aspect='auto', origin='lower', interpolation='none')
-    axes[2].set_title("Alignment")
-    axes[2].set_ylabel("Character Index")
-    axes[2].set_xlabel("Decoder Mel Timesteps")
+    # Predicted Mel
+    im2 = axes[2].imshow(pred_mel, aspect='auto', origin='lower', interpolation='none')
+    axes[2].set_title("Predicted Mel")
+    axes[2].set_ylabel("Mel bins")
     fig.colorbar(im2, ax=axes[2])
+
+    # Attention
+    im3 = axes[3].imshow(attention_weights, aspect='auto', origin='lower', interpolation='none')
+    axes[3].set_title("Alignment")
+    axes[3].set_ylabel("Character Index")
+    axes[3].set_xlabel("Decoder Mel Timesteps")
+    fig.colorbar(im3, ax=axes[3])
 
     # Adjust layout
     plt.tight_layout()
@@ -272,23 +279,25 @@ try:
             if (epoch + 1) % INFER_EVERY == 0 and save_first:
                 # inference on the first 10 elements of this batch
                 save_first = False
-                true_mels, pred_mels, attentions, texts = [], [], [], []
+                true_mels, pred_mels, attentions, teacher_forced_preds, texts = [], [], [], [], []
                 for i in range(10): 
                     pred_mel, attention = model.inference(text_padded[i]) # should be on device during inference
                     pred_mel = pred_mel.squeeze(0)  # (num_mels, mel_seq_len)
                     attention = attention.squeeze(0)  # (mel_seq_len, encoder_seq_len)
                     true_mel = denormalize(mel_padded[i].T.to("cpu"))
                     pred_mel = denormalize(pred_mel.T.to("cpu"))
+                    teacher_forced_pred = denormalize(mel_padded[i].T.to("cpu"))
                     attention = attention.T.cpu().numpy()
                     true_mels.append(true_mel)
                     pred_mels.append(pred_mel)
+                    teacher_forced_preds.append(teacher_forced_pred)
                     attentions.append(attention)
                     texts.append(text_padded[i])
                 file_dir = f"{SAVE_AUDIO_GEN}/epoch_{epoch}"
                 os.makedirs(file_dir, exist_ok=True)
                 for idx in range(10):
-                    mel, pred_mel, attention, text = true_mels[idx], pred_mels[idx], attentions[idx], texts[idx]
-                    save_training_inference(mel, pred_mel, attention, text, file_dir, idx)
+                    mel, pred_mel, attention, teacher_forced_pred, text = true_mels[idx], pred_mels[idx], attentions[idx], teacher_forced_preds[idx], texts[idx]
+                    save_training_inference(mel, pred_mel, attention, teacher_forced_pred, text, file_dir, idx)
                 model_save_file = f"{file_dir}/model.pt"
                 torch.save(model.state_dict(), model_save_file)
     
