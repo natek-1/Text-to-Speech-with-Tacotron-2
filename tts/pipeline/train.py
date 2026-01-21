@@ -37,7 +37,7 @@ dataset_config = TTSDatasetConfig()
 
 # Resume training configuration
 RESUME_TRAINING = False  # Set to True to resume from checkpoint
-CHECKPOINT_PATH = "checkpoints/model_checkpoint_v3.pt"
+CHECKPOINT_PATH = "checkpoints/model_checkpoint.pt"
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
@@ -46,16 +46,16 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Training configuration
 BATCH_SIZE = 64
-NUM_EPOCHS = 200
+NUM_EPOCHS = 100
 LEARNING_RATE = 0.001
 MIN_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-6
 EPSILON = 1e-6
 START_DECAY_EPOCHS = 5
-NUM_WORKERS = 3
-PREFETCH_FACTOR = 24
-SAVE_AUDIO_GEN = "generated_audio"
-INFER_EVERY = 1
+NUM_WORKERS = 12
+PREFETCH_FACTOR = 32
+SAVE_AUDIO_GEN = "inference_samples"
+INFER_EVERY = 10 # infer every n epochs
 SAMPLING_RATE = 22050
 
 os.makedirs(SAVE_AUDIO_GEN, exist_ok=True)
@@ -97,6 +97,8 @@ def save_training_inference(true_mel, pred_mel, attention_weights, text, file_pa
         sample_num (int): sample number
     '''
     fig, axes = plt.subplots(3, 1, figsize=(8, 12))
+    file_path = os.path.join(file_path, f"sample_{sample_num}/")
+    os.makedirs(file_path, exist_ok=True)
     
     # True Mel
     im0 = axes[0].imshow(true_mel, aspect='auto', origin='lower', interpolation='none')
@@ -119,16 +121,16 @@ def save_training_inference(true_mel, pred_mel, attention_weights, text, file_pa
 
     # Adjust layout
     plt.tight_layout()
-    plt.savefig(os.path.join(file_path, f"result_{sample_num}.png"))
+    plt.savefig(os.path.join(file_path, f"result.png"))
     plt.close()
 
     # save text
-    with open(os.path.join(file_path, f"text_{sample_num}.txt"), "w") as f:
+    with open(os.path.join(file_path, f"text.txt"), "w") as f:
         f.write(tokenizer.decode(text))
     
-    audio = a2m.mel2audio(pred_mel, do_denorm=True).cpu()
-    audio_path = os.path.join(file_path, f"audio_{sample_num}.wav")
-    write(audio_path, SAMPLING_RATE, audio.numpy())
+    audio = a2m.mel2audio(pred_mel, do_denorm=True)
+    audio_path = os.path.join(file_path, f"audio.wav")
+    write(audio_path, SAMPLING_RATE, audio)
     
 
 # scheduler
@@ -240,6 +242,7 @@ try:
         batch_mel_losses = []
         batch_refined_mel_losses = []
         batch_stop_losses = []
+        save_first = True
     
         loop = tqdm(enumerate(validation_loader), leave=False, desc="Validation Batch", total=len(validation_loader))
         for batch_idx, (text_padded, input_lengths, mel_padded, gate_padded, text_mask, mel_mask) in loop:
@@ -266,11 +269,14 @@ try:
             batch_mel_losses.append(mel_loss.item())
             batch_refined_mel_losses.append(refined_mel_loss.item())
             batch_stop_losses.append(stop_loss.item())
-            if epoch % INFER_EVERY == 0:
+            if (epoch + 1) % INFER_EVERY == 0 and save_first:
                 # inference on the first 10 elements of this batch
+                save_first = False
                 true_mels, pred_mels, attentions, texts = [], [], [], []
                 for i in range(10): 
                     pred_mel, attention = model.inference(text_padded[i]) # should be on device during inference
+                    pred_mel = pred_mel.squeeze(0)  # (num_mels, mel_seq_len)
+                    attention = attention.squeeze(0)  # (mel_seq_len, encoder_seq_len)
                     true_mel = denormalize(mel_padded[i].T.to("cpu"))
                     pred_mel = denormalize(pred_mel.T.to("cpu"))
                     attention = attention.T.cpu().numpy()
@@ -280,7 +286,9 @@ try:
                     texts.append(text_padded[i])
                 file_dir = f"{SAVE_AUDIO_GEN}/epoch_{epoch}"
                 os.makedirs(file_dir, exist_ok=True)
-                save_audio_generation(true_mels, pred_mels, attentions, texts, file_dir)
+                for idx in range(10):
+                    mel, pred_mel, attention, text = true_mels[idx], pred_mels[idx], attentions[idx], texts[idx]
+                    save_training_inference(mel, pred_mel, attention, text, file_dir, idx)
                 model_save_file = f"{file_dir}/model.pt"
                 torch.save(model.state_dict(), model_save_file)
     

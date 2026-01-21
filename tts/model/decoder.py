@@ -5,6 +5,8 @@ from tts.model.layers import LinearNorm, ConvNorm
 from tts.model.attention import LocalSensitiveAttention
 from tts.model.config import Tacotron2Config
 
+import logging as logging
+
 
 
 
