@@ -290,7 +290,7 @@ class Decoder(nn.Module):
 
         mels_output, stop_outs, attention_weights = [], [], []
 
-        _input = self._bos_frame(B=1).squeeze(0) # (1, num_mels)
+        _input = self._bos_frame(B=1).squeeze(0).to(encoder_output.device) # (1, num_mels)
         self.attention.reset()
 
         for step in range(max_decode_steps):
