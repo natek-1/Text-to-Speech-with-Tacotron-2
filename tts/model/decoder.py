@@ -20,7 +20,7 @@ class Prenet(nn.Module):
         prenet_depth (int): prenet depth
         dropout (float): dropout rate
     """
-    def __init__(self, input_dim, prenet_dim, prenet_depth, dropout=0.5):
+    def __init__(self, input_dim, prenet_dim, prenet_depth, dropout=0.1):
         super(Prenet, self).__init__()
         self.dropout = dropout
         dims = [input_dim] + [prenet_dim for _ in range(prenet_depth)]
@@ -99,7 +99,7 @@ class Postnet(nn.Module):
         '''
         x = x.transpose(1, 2) # (batch_size, num_mels, seq_len)
         for conv in self.convolutions:
-            x = F.dropout(conv(x), p=self.dropout, training=True)
+            x = F.dropout(conv(x), p=self.dropout, training=self.training)
         x = x.transpose(1, 2) # (batch_size, seq_len, num_mels)
         return x
 
