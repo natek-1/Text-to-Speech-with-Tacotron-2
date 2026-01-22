@@ -214,3 +214,4 @@ checkpoints
 generated_audio/
 att_dir/
 inference_samples/
+inference_samples_v2/
